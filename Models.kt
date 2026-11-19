@@ -25,6 +25,19 @@ data class TripResult(
     val efficiencyKind: String? = null,
     /** 내 평소 기록 대비 개선률(%). 비교할 기록이 부족하면 null. */
     val efficiencyImprovement: Double? = null,
+    /** 에코 점수 세부 항목. 이전 버전 기록에는 없어서 null. */
+    val ecoDetail: EcoBreakdown? = null,
+    /** 내비 제한속도로 나눈 도로 종류별 거리. 제한속도를 받지 못했으면 모두 0. */
+    val roadKm: RoadKm = RoadKm(),
+    /** 시뮬레이션으로 만든 기록이면 true. 실제 주행 리그와 섞지 않는다. */
+    val simulated: Boolean = false,
+    /** 이번 주행의 감점 기록. 지난 주행의 리포트를 다시 볼 때 쓴다. 이전 버전 기록에는 없다. */
+    val events: List<LiveEvent> = emptyList(),
+    /**
+     * 사용자가 최근 주행 목록에서 지운 기록이면 true. 목록에서만 숨기고,
+     * 평균 점수·리그·포인트·배지·평소 대비 비교에는 그대로 쓴다.
+     */
+    val hidden: Boolean = false,
 ) {
     val durationMin: Int get() = ((endTimeMs - startTimeMs) / 60_000L).toInt()
 
@@ -35,8 +48,17 @@ data class TripResult(
             return if (hours > 0) distanceKm / hours else 0.0
         }
 
-    /** 평균 속도로 나눈 도로 종류. 연비는 도로 종류에 따라 크게 달라서 같은 종류끼리 비교한다. */
-    val roadType: RoadType get() = RoadType.of(averageSpeedKmh)
+    /**
+     * 이번 주행의 도로 종류. 연비는 도로 종류에 따라 크게 달라서 같은 종류끼리 비교한다.
+     * 내비가 알려 준 제한속도로 주행 거리의 절반 이상을 나눌 수 있으면 가장 많이 달린 도로,
+     * 아니면 평균 속도로 추정한다.
+     */
+    val roadType: RoadType
+        get() = roadKm.takeIf { distanceKm > 0 && it.total >= distanceKm * 0.5 }?.dominant()
+            ?: RoadType.of(averageSpeedKmh)
+
+    /** 도로 종류를 제한속도로 정했으면 true, 평균 속도로 추정했으면 false. */
+    val roadTypeFromLimit: Boolean get() = distanceKm > 0 && roadKm.total >= distanceKm * 0.5
 }
 
 /** 처음 가 본 장소에 찍히는 스탬프. */
@@ -79,7 +101,7 @@ enum class Badge(val title: String, val description: String) {
     PERFECT("무결점 주행", "급가속·급제동·급조향 없이 주행을 마쳤어요"),
 }
 
-/** 평균 속도(정차 포함)로 나눈 도로 종류. */
+/** 도로 종류. 내비 제한속도로 나누고, 모르면 평균 속도(정차 포함)로 추정한다. */
 enum class RoadType(val label: String) {
     CITY("시내"),
     MIXED("국도"),
@@ -90,6 +112,13 @@ enum class RoadType(val label: String) {
             averageSpeedKmh < 30.0 -> CITY
             averageSpeedKmh < 65.0 -> MIXED
             else -> HIGHWAY
+        }
+
+        /** 제한속도로 나눈다. 90 이상 고속도로(자동차전용도로 포함), 60~80 국도·간선, 50 이하 시내. */
+        fun ofLimit(limitKmh: Int): RoadType = when {
+            limitKmh >= 90 -> HIGHWAY
+            limitKmh >= 60 -> MIXED
+            else -> CITY
         }
     }
 }

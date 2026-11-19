@@ -33,6 +33,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.kkwongal.drive.TripMark
+import com.kkwongal.drive.core.Coaching
+import com.kkwongal.drive.core.EcoBreakdown
+import com.kkwongal.drive.core.EcoItem
 import com.kkwongal.drive.core.EnergyKind
 import com.kkwongal.drive.core.LiveEvent
 import com.kkwongal.drive.core.LeagueStanding
@@ -46,11 +49,18 @@ fun ResultScreen(
     result: TripResult,
     marks: List<TripMark>,
     events: List<LiveEvent>,
+    ecoDelta: Int?,
     league: LeagueStanding?,
     newStamp: Stamp?,
     eggCount: Int,
     onSaveStamp: (Int, String, String, List<String>) -> Unit,
     onDone: () -> Unit,
+    /** 머리에 보일 도착지 이름. */
+    placeName: String? = newStamp?.name,
+    /** 최근 주행 목록에서 다시 연 지난 리포트면 true. */
+    past: Boolean = false,
+    /** 지난 리포트에서 이 기록을 목록에서 지운다. null 이면 삭제 버튼을 보이지 않는다. */
+    onDelete: (() -> Unit)? = null,
 ) {
     val c = LocalKk.current
     BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -62,9 +72,9 @@ fun ResultScreen(
             // 머리: 제목과 리그 순위
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("주행 리포트", color = c.text, fontSize = 26.sp, fontWeight = FontWeight.Bold)
+                    Text(if (past) "지난 주행 리포트" else "주행 리포트", color = c.text, fontSize = 26.sp, fontWeight = FontWeight.Bold)
                     Text(
-                        "${dateText(result.startTimeMs)} 출발 · ${newStamp?.name ?: "도착"}",
+                        "${dateText(result.startTimeMs)} 출발 · ${placeName ?: "도착"}",
                         color = c.muted,
                         fontSize = 15.sp,
                     )
@@ -88,22 +98,40 @@ fun ResultScreen(
 
             if (wide) {
                 Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                    ScoreCard(result, Modifier.weight(1f))
+                    ScoreCard(result, ecoDelta, Modifier.weight(1f))
                     if (newStamp != null) {
                         EggStampCard(newStamp, eggCount, "새로운 알을 찾았어요", onSaveStamp, Modifier.weight(1.15f))
                     }
                 }
             } else {
-                ScoreCard(result, Modifier.fillMaxWidth())
+                ScoreCard(result, ecoDelta, Modifier.fillMaxWidth())
                 if (newStamp != null) {
                     EggStampCard(newStamp, eggCount, "새로운 알을 찾았어요", onSaveStamp, Modifier.fillMaxWidth())
                 }
             }
 
+            result.ecoDetail?.let { EcoHabitsCard(result, it) }
             TripStatsCard(result, marks)
-            PenaltyHistoryCard(events)
+            PenaltyHistoryCard(events, result.harshAccelCount + result.harshBrakeCount + result.harshSteerCount)
 
-            Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End),
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                if (onDelete != null) {
+                    // 실수로 지우지 않도록 두 번 눌러야 지운다
+                    var confirm by remember(result.startTimeMs) { mutableStateOf(false) }
+                    if (confirm) {
+                        Text("평균 점수와 리그에는 그대로 남아요", color = c.muted, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                    }
+                    KkButton(
+                        if (confirm) "한 번 더 누르면 삭제" else "기록 삭제",
+                        onClick = { if (confirm) onDelete() else confirm = true },
+                        kind = ButtonKind.DANGER,
+                        modifier = Modifier.width(if (confirm) 200.dp else 160.dp),
+                    )
+                }
                 KkButton(
                     if (newStamp != null) "닫기" else "확인",
                     onClick = onDone,
@@ -123,7 +151,7 @@ private fun scoreMessage(score: Int): String = when {
 }
 
 @Composable
-private fun ScoreCard(result: TripResult, modifier: Modifier) {
+private fun ScoreCard(result: TripResult, ecoDelta: Int?, modifier: Modifier) {
     val c = LocalKk.current
     KkCard(modifier = modifier) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(20.dp)) {
@@ -136,6 +164,19 @@ private fun ScoreCard(result: TripResult, modifier: Modifier) {
             }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(scoreMessage(result.score), color = c.text, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                if (ecoDelta != null) {
+                    // 남이 아니라 내 평소(최근 5번)와 비교한다
+                    Text(
+                        Coaching.deltaText(ecoDelta),
+                        color = when {
+                            ecoDelta >= 1 -> c.good
+                            ecoDelta <= -1 -> c.penalty
+                            else -> c.muted
+                        },
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
                 ScoreBar("에코", result.ecoScore, c.good)
                 ScoreBar("안전", result.safetyScore, c.accent)
                 Text("종합 = 에코 60% + 안전 40%", color = c.muted, fontSize = 13.sp)
@@ -300,7 +341,7 @@ private val clockFormat = java.text.SimpleDateFormat("HH:mm", java.util.Locale.K
  * 일어난 순서대로: 언제, 몇 km 지점에서, 무엇 때문에, 몇 점이 깎였는지.
  */
 @Composable
-private fun PenaltyHistoryCard(events: List<LiveEvent>) {
+private fun PenaltyHistoryCard(events: List<LiveEvent>, harshCount: Int) {
     val c = LocalKk.current
     KkCard(modifier = Modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -311,7 +352,10 @@ private fun PenaltyHistoryCard(events: List<LiveEvent>) {
             }
         }
         androidx.compose.foundation.layout.Spacer(Modifier.height(10.dp))
-        if (events.isEmpty()) {
+        if (events.isEmpty() && harshCount > 0) {
+            // 감점 상세를 저장하기 전 버전에서 남긴 기록
+            Text("급조작 ${harshCount}회 · 이 기록은 감점 상세가 저장되어 있지 않아요", color = c.muted, fontSize = 15.sp)
+        } else if (events.isEmpty()) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 EggIcon(22.dp, 26.dp, c.gold, stroke = c.accentText)
                 Text("급조작 없이 도착했어요", color = c.good, fontSize = 16.sp, fontWeight = FontWeight.Bold)
@@ -344,3 +388,70 @@ private fun PenaltyHistoryCard(events: List<LiveEvent>) {
         }
     }
 }
+
+/**
+ * 에코 운전 습관 카드: 에코 점수를 이루는 항목별 점수와, 가장 아쉬운 항목 하나에 대한 한 줄 조언.
+ * 도로 종류는 내비 제한속도로 나눴으면 그대로, 아니면 평균 속도로 추정했다고 밝힌다.
+ */
+@Composable
+private fun EcoHabitsCard(result: TripResult, detail: EcoBreakdown) {
+    val c = LocalKk.current
+    KkCard(modifier = Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("에코 운전 습관", color = c.text, fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+            Text(
+                result.roadType.label + if (result.roadTypeFromLimit) " · 제한속도 기준" else " · 평균 속도로 추정",
+                color = c.muted,
+                fontSize = 14.sp,
+            )
+        }
+        androidx.compose.foundation.layout.Spacer(Modifier.height(10.dp))
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            detail.items().forEach { (item, score) ->
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(item.label, color = c.text, fontSize = 15.sp, modifier = Modifier.width(120.dp), maxLines = 1)
+                    ProgressBar(score / 100f, if (score >= 70) c.good else c.penalty, Modifier.weight(1f))
+                    Text(
+                        ecoNote(item, detail),
+                        color = c.muted,
+                        fontSize = 13.sp,
+                        maxLines = 1,
+                        modifier = Modifier.width(150.dp),
+                    )
+                    Text(
+                        "$score",
+                        color = c.text,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.width(36.dp),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.End,
+                    )
+                }
+            }
+        }
+        androidx.compose.foundation.layout.Spacer(Modifier.height(12.dp))
+        val weakest = detail.weakest()
+        Text(
+            if (weakest != null) "다음엔 · ${weakest.tip}" else "모든 습관이 좋았어요. 이대로만 달려요",
+            color = if (weakest != null) c.accentText else c.good,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Bold,
+        )
+        if (result.efficiencyImprovement != null) {
+            Text("에코 점수에는 실제 측정한 ${energyLabel(result)}도 함께 반영했어요", color = c.muted, fontSize = 13.sp)
+        }
+    }
+}
+
+private fun energyLabel(result: TripResult): String =
+    runCatching { EnergyKind.valueOf(result.efficiencyKind ?: "") }.getOrNull()?.label ?: "연비"
+
+/** 항목 옆에 붙는 짧은 설명 (원래 값). */
+private fun ecoNote(item: EcoItem, d: EcoBreakdown): String = when (item) {
+    EcoItem.ACCEL -> "가속 패턴"
+    EcoItem.STEADY -> "시속 60km 이상"
+    EcoItem.SPEED -> d.overSpeedPercent?.let { if (it == 0) "과속 없음" else "과속 거리 $it%" } ?: ""
+    EcoItem.COAST -> d.coastPercent?.let { "발 떼고 감속 $it%" } ?: ""
+    EcoItem.IDLE -> if (d.idleMin < 0.5) "공회전 없음" else "공회전 ${fmt(d.idleMin, 0)}분"
+}
+

@@ -136,10 +136,28 @@ private fun KkwongalContent(ui: UiState, vm: KkwongalViewModel) {
                     when {
                         // 주행 중에는 조작할 것이 없는 화면만 보여 준다
                         ui.tripActive -> DrivingScreen(ui)
+                        ui.pastReport != null -> {
+                            val past = ui.pastReport!!
+                            ResultScreen(
+                                result = past.result,
+                                marks = past.marks,
+                                events = past.result.events,
+                                ecoDelta = past.ecoDelta,
+                                league = null,
+                                newStamp = null,
+                                eggCount = ui.stamps.size,
+                                onSaveStamp = vm::saveStamp,
+                                onDone = vm::closeTrip,
+                                placeName = past.placeName,
+                                past = true,
+                                onDelete = { vm.deleteTrip(past.result) },
+                            )
+                        }
                         result != null -> ResultScreen(
                             result = result,
                             marks = ui.lastTripMarks,
                             events = ui.lastTripEvents,
+                            ecoDelta = ui.lastEcoDelta,
                             league = ui.league,
                             newStamp = ui.newStamp,
                             eggCount = ui.stamps.size,
@@ -158,9 +176,10 @@ private fun KkwongalContent(ui: UiState, vm: KkwongalViewModel) {
                             onThemeMode = vm::setThemeMode,
                             onOpenDiagnostics = { showDiagnostics = true },
                             onVoiceGuide = vm::setVoiceGuide,
+                            onOpenTrip = vm::openTrip,
                         )
                         tab == 1 -> MapScreen(ui.stamps, onSaveStamp = vm::saveStamp, onNavigate = vm::navigateTo)
-                        else -> LeagueScreen(ui.league, ui.earnedPoints)
+                        else -> LeagueScreen(ui.league, ui.earnedPoints, ui.simulation)
                     }
                 }
                 if (showSim && wide) {

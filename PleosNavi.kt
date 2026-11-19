@@ -12,13 +12,15 @@ import com.kkwongal.drive.core.GeoPoint
 
 /**
  * Pleos NaviHelper SDK (3.0.5) 연결.
- * - 받기: 현재 위치·주소(onCurrentLocationInfo), 목적지 도착(onDestinationArrived), 오류(onError)
+ * - 받기: 현재 위치·주소(onCurrentLocationInfo), 목적지 도착(onDestinationArrived),
+ *   지금 도로의 제한속도(onCurrentRoadSpeedLimit, 1초마다), 오류(onError)
  * - 보내기: 여행 지도의 장소로 길 안내 시작(requestRoute)
  */
 class PleosNavi(
     private val context: Context,
     private val onLocation: (GeoPoint, String) -> Unit,
     private val onArrived: (String) -> Unit,
+    private val onSpeedLimit: (Int) -> Unit,
     private val onStatus: (String) -> Unit,
 ) {
     private var navi: NaviHelper? = null
@@ -38,6 +40,11 @@ class PleosNavi(
         override fun onDestinationArrived(info: DestinationArrivedInfo) {
             // 목적지 이름 (예: 강릉 안목해변). 스탬프 이름으로 쓴다.
             onArrived(info.name)
+        }
+
+        override fun onCurrentRoadSpeedLimit(speedLimit: Int) {
+            // 도로 종류(시내·국도·고속도로)와 적정 속도 판단에 쓴다
+            onSpeedLimit(speedLimit)
         }
 
         override fun onError(errorCode: NaviErrorCode) {

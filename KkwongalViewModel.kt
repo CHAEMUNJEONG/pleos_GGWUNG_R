@@ -7,17 +7,15 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.kkwongal.drive.core.Badge
 import com.kkwongal.drive.core.BadgeRules
-import com.kkwongal.drive.core.Channel
-import com.kkwongal.drive.core.ChannelState
+import com.kkwongal.drive.core.Coaching
 import com.kkwongal.drive.core.EnergyMeter
 import com.kkwongal.drive.core.EnergySnapshot
 import com.kkwongal.drive.core.GeoPoint
 import com.kkwongal.drive.core.HarshEvent
-import com.kkwongal.drive.core.HarshType
 import com.kkwongal.drive.core.League
+import com.kkwongal.drive.core.LeagueStanding
 import com.kkwongal.drive.core.LiveEvent
 import com.kkwongal.drive.core.OngoingTrip
-import com.kkwongal.drive.core.LeagueStanding
 import com.kkwongal.drive.core.Stamp
 import com.kkwongal.drive.core.StampBook
 import com.kkwongal.drive.core.TripContinuation
@@ -39,55 +37,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.time.ZoneId
-
-/** 주행 중 급조작이 일어난 시점. fraction 은 주행 시간 중 위치 (0 = 출발, 1 = 도착). */
-data class TripMark(val type: HarshType, val fraction: Float)
-
-data class UiState(
-    val simulation: Boolean = false,
-    val sourceStatus: String = "",
-    val driveState: DriveState = DriveState.UNKNOWN,
-    val speedKmh: Double? = null,
-    val uxRestricted: Boolean = false,
-    val tripActive: Boolean = false,
-    /** 주행 중 실시간 안전 점수. */
-    val liveSafety: Int = 100,
-    /** 주행 중 종합 점수 (에코 60% + 안전 40%). 주행 화면의 원형 게이지에 쓴다. */
-    val liveTotal: Int = 100,
-    val liveHarshAccel: Int = 0,
-    val liveHarshBrake: Int = 0,
-    val liveHarshSteer: Int = 0,
-    /** 가장 최근 급조작. 화면에 잠깐 감점을 띄우는 데 쓴다. */
-    val lastHarshEvent: HarshEvent? = null,
-    /** 이번 주행의 감점 기록. 일어난 순서대로. */
-    val liveEvents: List<LiveEvent> = emptyList(),
-    /** 급조작이 일어날 때마다 1씩 늘어난다. 같은 감점이 연달아 나와도 화면이 다시 띄우도록 쓴다. */
-    val harshEventSeq: Int = 0,
-    /** 방금 끝난 주행. 다음 주행을 시작하거나 닫으면 null. */
-    val lastResult: TripResult? = null,
-    /** 방금 끝난 주행에서 새로 찍힌 스탬프. */
-    val newStamp: Stamp? = null,
-    val notice: String? = null,
-    val trips: List<TripResult> = emptyList(),
-    val stamps: List<Stamp> = emptyList(),
-    val badges: Set<Badge> = emptySet(),
-    /** 이번 주 리그 순위표. */
-    val league: LeagueStanding? = null,
-    /** 지난 주들까지 받은 가상 포인트 합계. */
-    val earnedPoints: Int = 0,
-    /** 화면 테마: 자동(차량 주야간을 따름) / 밝게 / 어둡게. */
-    val themeMode: ThemeMode = ThemeMode.AUTO,
-    /** 방금 끝난 주행에서 급조작이 일어난 시점들. 리포트의 시간 막대에 쓴다. */
-    val lastTripMarks: List<TripMark> = emptyList(),
-    /** 차량 데이터 종류별 연결 상태. 연결 점검 화면에 쓴다. */
-    val diagnostics: Map<Channel, ChannelState> = emptyMap(),
-    /** 방금 끝난 주행의 감점 기록. 리포트에 보여 준다. */
-    val lastTripEvents: List<LiveEvent> = emptyList(),
-    /** 주행 중 감점을 음성으로 알려 줄지. 설정에서 끌 수 있다. */
-    val voiceGuide: Boolean = true,
-    /** 지금 쓰는 음성 엔진 이름 (설정 화면 안내용). */
-    val voiceEngine: String = "음성 준비 중",
-)
 
 class KkwongalViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -129,6 +78,12 @@ class KkwongalViewModel(app: Application) : AndroidViewModel(app) {
     private var source: VehicleSource? = null
     private var collectJob: Job? = null
 
+    /** 시뮬레이션으로 달리는 중인지. 기록에 표시하고, 리그를 실제 주행과 나누는 데 쓴다. */
+    private var simulationMode = false
+
+    /** 시연 모드 진행 작업. */
+    private var demoJob: Job? = null
+
     private val _ui: MutableStateFlow<UiState>
     val ui: StateFlow<UiState>
 
@@ -155,10 +110,19 @@ class KkwongalViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun leagueNow(): LeagueStanding =
-        League.standing(trips, System.currentTimeMillis(), ZoneId.systemDefault())
+        League.standing(trips, System.currentTimeMillis(), ZoneId.systemDefault(), simulated = simulationMode)
 
     private fun pointsNow(): Int =
-        League.earnedPoints(trips, System.currentTimeMillis(), ZoneId.systemDefault())
+        League.earnedPoints(trips, System.currentTimeMillis(), ZoneId.systemDefault(), simulated = simulationMode)
+
+    /** 기록·스탬프가 바뀐 뒤 화면 상태에 함께 반영할 값들 (기록, 스탬프, 배지, 리그, 포인트). */
+    private fun UiState.withRecords(): UiState = copy(
+        trips = this@KkwongalViewModel.trips,
+        stamps = stampBook.stamps,
+        badges = BadgeRules.evaluate(this@KkwongalViewModel.trips, stampBook.stamps),
+        league = leagueNow(),
+        earnedPoints = pointsNow(),
+    )
 
     /** 주가 바뀌었을 수 있으니 화면에 돌아올 때 순위표를 다시 계산한다. */
     fun refreshLeague() {
@@ -173,6 +137,7 @@ class KkwongalViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setSimulation(enabled: Boolean) {
         if (_ui.value.tripActive) return // 주행 중에는 바꾸지 않는다
+        stopDemo()
         detach()
         lastFinished = null // 실제 차량 주행과 시뮬레이션 주행을 이어 붙이지 않는다
         var simulation = enabled
@@ -190,7 +155,8 @@ class KkwongalViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         source = newSource
-        _ui.update { it.copy(simulation = simulation, notice = fallbackNotice) }
+        simulationMode = simulation
+        _ui.update { it.copy(simulation = simulation, notice = fallbackNotice, demoStep = null).withRecords() }
         attach(newSource)
     }
 
@@ -208,6 +174,10 @@ class KkwongalViewModel(app: Application) : AndroidViewModel(app) {
             launch {
                 // 브레이크 페달 신호 (Pleos Vehicle SDK). 급정거를 "브레이크를 밟으며 감속"으로 판정하는 데 쓴다.
                 s.brakeSamples.collect { sample -> recorder.onBrakePedal(sample.timeMs, sample.pressed) }
+            }
+            launch {
+                // 지금 도로의 제한속도 (Pleos NaviHelper). 도로 종류와 적정 속도 판단에 쓴다.
+                s.speedLimitSamples.collect { sample -> recorder.onSpeedLimit(sample.timeMs, sample.limitKmh) }
             }
             launch {
                 s.speedSamples.collect { sample ->
@@ -369,6 +339,7 @@ class KkwongalViewModel(app: Application) : AndroidViewModel(app) {
             it.copy(
                 tripActive = true,
                 lastResult = null,
+                pastReport = null,
                 newStamp = null,
                 notice = notice,
                 liveSafety = recorder.currentSafetyScore,
@@ -398,25 +369,18 @@ class KkwongalViewModel(app: Application) : AndroidViewModel(app) {
         storage.clearOngoing()
         val r = TripRecorder()
         r.resume(trip.snapshot)
-        val measured = r.finish(trip.startWallMs, trip.savedAtMs)
+        val measured = r.finish(trip.startWallMs, trip.savedAtMs).copy(simulated = simulationMode, events = trip.events)
         if (measured.distanceKm < MIN_TRIP_KM) return
-        trips = trips + EnergyMeter.apply(measured, null, trips)
+        trips = trips + EnergyMeter.apply(measured, null, sameMode(measured))
         persist()
-        _ui.update {
-            it.copy(
-                notice = "앱이 꺼져 있던 동안 끝난 주행을 기록에 남겼어요",
-                trips = trips,
-                badges = BadgeRules.evaluate(trips, stampBook.stamps),
-                league = leagueNow(),
-                earnedPoints = pointsNow(),
-            )
-        }
+        _ui.update { it.copy(notice = "앱이 꺼져 있던 동안 끝난 주행을 기록에 남겼어요").withRecords() }
     }
 
     /** 이어 붙이기 위해 방금 끝낸 주행의 기록과, 그때 자동으로 찍힌 스탬프를 되돌린다. */
     private fun undoFinished(previous: FinishedTrip) {
         previous.result?.let { result ->
-            val index = trips.lastIndexOf(result)
+            // 목록에서 지워(숨겨) 값이 바뀌었을 수 있으므로 시각으로 찾는다
+            val index = trips.indexOfLast { it.startTimeMs == result.startTimeMs && it.endTimeMs == result.endTimeMs }
             if (index >= 0) trips = trips.toMutableList().apply { removeAt(index) }
         }
         previous.stamp?.let { stamp ->
@@ -427,21 +391,16 @@ class KkwongalViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         persist()
-        _ui.update {
-            it.copy(
-                trips = trips,
-                stamps = stampBook.stamps,
-                badges = BadgeRules.evaluate(trips, stampBook.stamps),
-                league = leagueNow(),
-                earnedPoints = pointsNow(),
-            )
-        }
+        _ui.update { it.withRecords() }
     }
+
+    /** 같은 모드(실제/시뮬레이션)의 기록. 연비 비교와 평소 대비 코칭은 같은 모드끼리 한다. */
+    private fun sameMode(result: TripResult): List<TripResult> = trips.filter { it.simulated == result.simulated }
 
     private fun finishTrip() {
         val endWallMs = System.currentTimeMillis()
         val startWallMs = tripStartWallMs
-        val measured = recorder.finish(startWallMs, endWallMs)
+        val measured = recorder.finish(startWallMs, endWallMs).copy(simulated = simulationMode)
         val snapshot = recorder.snapshot()
         val events = _ui.value.liveEvents
         val stoppedAt = source?.location?.value
@@ -460,13 +419,17 @@ class KkwongalViewModel(app: Application) : AndroidViewModel(app) {
             val endEnergy = source?.readEnergy()
             val efficiency = EnergyMeter.measure(startEnergy, endEnergy, measured.distanceKm)
             completeTrip(
-                EnergyMeter.apply(measured, efficiency, trips),
+                EnergyMeter.apply(measured, efficiency, sameMode(measured)),
                 FinishedTrip(null, snapshot, startWallMs, endWallMs, startEnergy, events, null, stoppedAt),
             )
         }
     }
 
-    private fun completeTrip(result: TripResult, finished: FinishedTrip) {
+    private fun completeTrip(measuredResult: TripResult, finished: FinishedTrip) {
+        // 지난 리포트를 다시 볼 수 있도록 감점 기록도 함께 저장한다
+        val result = measuredResult.copy(events = finished.events)
+        // 평소(최근 5번) 대비 에코 점수. 이번 주행을 넣기 전에 계산한다.
+        val ecoDelta = Coaching.ecoDelta(result, sameMode(result))
         trips = trips + result
         val stamp = finished.stoppedAt?.let {
             val perfect = result.harshAccelCount + result.harshBrakeCount + result.harshSteerCount == 0
@@ -482,13 +445,12 @@ class KkwongalViewModel(app: Application) : AndroidViewModel(app) {
                 lastTripMarks = TripContinuation.marks(finished.events, finished.startWallMs, finished.endWallMs)
                     .map { (type, fraction) -> TripMark(type, fraction) },
                 newStamp = stamp,
-                trips = trips,
-                stamps = stampBook.stamps,
-                badges = BadgeRules.evaluate(trips, stampBook.stamps),
-                league = leagueNow(),
-                earnedPoints = pointsNow(),
-            )
+                lastEcoDelta = ecoDelta,
+                pastReport = null,
+            ).withRecords()
         }
+        // 주차하면 한 줄 요약을 읽어 준다. 다시 출발해 앞 주행에 이어 붙이는 중이면 읽지 않는다.
+        if (_ui.value.voiceGuide && !recorder.isActive) voice.speak(Coaching.parkingSummary(result, ecoDelta))
     }
 
     /**
@@ -532,6 +494,37 @@ class KkwongalViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** 최근 주행 목록에서: 그 주행의 리포트를 다시 연다. */
+    fun openTrip(trip: TripResult) {
+        val index = trips.indexOf(trip)
+        if (index < 0) return
+        val before = trips.subList(0, index).filter { it.simulated == trip.simulated }
+        val stamp = stampBook.stamps.firstOrNull { it.timeMs == trip.endTimeMs }
+        val report = PastReport(
+            result = trip,
+            marks = TripContinuation.marks(trip.events, trip.startTimeMs, trip.endTimeMs)
+                .map { (type, fraction) -> TripMark(type, fraction) },
+            ecoDelta = Coaching.ecoDelta(trip, before),
+            placeName = stamp?.name,
+        )
+        _ui.update { it.copy(pastReport = report) }
+    }
+
+    /**
+     * 최근 주행 목록에서 이 기록을 지운다. 목록에서만 사라지고, 평균 점수·리그·포인트·배지에는 그대로 남는다.
+     */
+    fun deleteTrip(trip: TripResult) {
+        val index = trips.indexOfFirst { it.startTimeMs == trip.startTimeMs && it.endTimeMs == trip.endTimeMs }
+        if (index < 0) return
+        trips = trips.toMutableList().apply { this[index] = trip.copy(hidden = true) }
+        persist()
+        _ui.update { it.copy(pastReport = null, notice = "주행 기록을 지웠어요 (평균 점수와 리그에는 그대로 남아요)").withRecords() }
+    }
+
+    fun closeTrip() {
+        _ui.update { it.copy(pastReport = null) }
+    }
+
     fun dismissResult() {
         _ui.update { it.copy(lastResult = null, newStamp = null, notice = null) }
     }
@@ -558,7 +551,34 @@ class KkwongalViewModel(app: Application) : AndroidViewModel(app) {
         (source as? FakeVehicleSource)?.jerkSteering()
     }
 
+    /**
+     * 시연 모드: 정해진 시나리오로 출발부터 주차까지 자동으로 달린다 (5배속, 약 1분 30초).
+     * 발표 때마다 같은 결과가 나오도록 한다. 시뮬레이션 모드에서만 동작한다.
+     */
+    fun simRunDemo() {
+        val fake = source as? FakeVehicleSource ?: return
+        if (demoJob?.isActive == true || _ui.value.tripActive) return
+        lastFinished = null // 앞 주행에 이어 붙이지 않고 매번 새 주행으로 시연한다
+        _ui.update { it.copy(lastResult = null, newStamp = null, notice = null) }
+        demoJob = viewModelScope.launch {
+            try {
+                fake.runDemo { step -> _ui.update { it.copy(demoStep = step) } }
+            } finally {
+                _ui.update { it.copy(demoStep = null) }
+            }
+        }
+    }
+
+    fun simStopDemo() = stopDemo()
+
+    private fun stopDemo() {
+        demoJob?.cancel()
+        demoJob = null
+        (source as? FakeVehicleSource)?.endDemo()
+    }
+
     override fun onCleared() {
+        stopDemo()
         voice.release()
         saveOngoing()
         detach()

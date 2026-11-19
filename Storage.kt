@@ -8,6 +8,9 @@ import com.kkwongal.drive.core.LiveEvent
 import com.kkwongal.drive.core.OngoingTrip
 import com.kkwongal.drive.core.Stamp
 import com.kkwongal.drive.core.TripSnapshot
+import com.kkwongal.drive.core.EcoBreakdown
+import com.kkwongal.drive.core.EcoState
+import com.kkwongal.drive.core.RoadKm
 import com.kkwongal.drive.core.TripResult
 import org.json.JSONArray
 import org.json.JSONObject
@@ -50,6 +53,11 @@ class Storage(context: Context) {
                         efficiency = if (o.has("eff")) o.getDouble("eff") else null,
                         efficiencyKind = o.optString("effKind", "").ifBlank { null },
                         efficiencyImprovement = if (o.has("effImp")) o.getDouble("effImp") else null,
+                        ecoDetail = o.optJSONObject("ecoDetail")?.let(::readEcoDetail),
+                        roadKm = o.optJSONObject("roadKm")?.let(::readRoadKm) ?: RoadKm(),
+                        simulated = o.optBoolean("sim", false),
+                        events = o.optJSONArray("events").toList(::readEvent),
+                        hidden = o.optBoolean("hidden", false),
                     )
                 },
                 stamps = root.optJSONArray("stamps").toList { o ->
@@ -95,6 +103,11 @@ class Storage(context: Context) {
                                 t.efficiency?.let { put("eff", it) }
                                 t.efficiencyKind?.let { put("effKind", it) }
                                 t.efficiencyImprovement?.let { put("effImp", it) }
+                                t.ecoDetail?.let { put("ecoDetail", writeEcoDetail(it)) }
+                                put("roadKm", writeRoadKm(t.roadKm))
+                                if (t.simulated) put("sim", true)
+                                if (t.hidden) put("hidden", true)
+                                if (t.events.isNotEmpty()) put("events", JSONArray().apply { t.events.forEach { put(writeEvent(it)) } })
                             },
                     )
                 }
@@ -121,6 +134,73 @@ class Storage(context: Context) {
         }
     }
 
+    private fun readEvent(e: JSONObject) = LiveEvent(
+        type = HarshType.valueOf(e.getString("type")),
+        penalty = e.getInt("penalty"),
+        scoreAfter = e.getInt("after"),
+        wallTimeMs = e.getLong("time"),
+        km = e.getDouble("km"),
+    )
+
+    private fun writeEvent(e: LiveEvent) = JSONObject()
+        .put("type", e.type.name)
+        .put("penalty", e.penalty)
+        .put("after", e.scoreAfter)
+        .put("time", e.wallTimeMs)
+        .put("km", e.km)
+
+    private fun readEcoDetail(o: JSONObject) = EcoBreakdown(
+        accel = o.getInt("accel"),
+        steady = o.optIntOrNull("steady"),
+        speed = o.optIntOrNull("speed"),
+        coast = o.optIntOrNull("coast"),
+        idle = o.optIntOrNull("idle"),
+        overSpeedPercent = o.optIntOrNull("overPct"),
+        coastPercent = o.optIntOrNull("coastPct"),
+        idleMin = o.optDouble("idleMin", 0.0),
+    )
+
+    private fun writeEcoDetail(d: EcoBreakdown) = JSONObject()
+        .put("accel", d.accel)
+        .put("idleMin", d.idleMin)
+        .apply {
+            d.steady?.let { put("steady", it) }
+            d.speed?.let { put("speed", it) }
+            d.coast?.let { put("coast", it) }
+            d.idle?.let { put("idle", it) }
+            d.overSpeedPercent?.let { put("overPct", it) }
+            d.coastPercent?.let { put("coastPct", it) }
+        }
+
+    private fun readRoadKm(o: JSONObject) =
+        RoadKm(o.optDouble("city", 0.0), o.optDouble("road", 0.0), o.optDouble("highway", 0.0))
+
+    private fun writeRoadKm(r: RoadKm) = JSONObject()
+        .put("city", r.city)
+        .put("road", r.road)
+        .put("highway", r.highway)
+
+    private fun readEcoState(o: JSONObject) = EcoState(
+        cruiseSec = o.optDouble("cruiseSec", 0.0),
+        cruiseChange = o.optDouble("cruiseChange", 0.0),
+        overSpeedKm = o.optDouble("overKm", 0.0),
+        coastEnergy = o.optDouble("coast", 0.0),
+        brakeEnergy = o.optDouble("brake", 0.0),
+        idleSec = o.optDouble("idleSec", 0.0),
+        roadKm = o.optJSONObject("roadKm")?.let(::readRoadKm) ?: RoadKm(),
+    )
+
+    private fun writeEcoState(e: EcoState) = JSONObject()
+        .put("cruiseSec", e.cruiseSec)
+        .put("cruiseChange", e.cruiseChange)
+        .put("overKm", e.overSpeedKm)
+        .put("coast", e.coastEnergy)
+        .put("brake", e.brakeEnergy)
+        .put("idleSec", e.idleSec)
+        .put("roadKm", writeRoadKm(e.roadKm))
+
+    private fun JSONObject.optIntOrNull(key: String): Int? = if (has(key) && !isNull(key)) getInt(key) else null
+
     fun loadOngoing(): OngoingTrip? {
         if (!ongoingFile.exists()) return null
         return try {
@@ -136,6 +216,7 @@ class Storage(context: Context) {
                     harshBrake = snap.getInt("brake"),
                     harshSteer = snap.getInt("steer"),
                     positiveKineticSum = snap.getDouble("pke"),
+                    eco = snap.optJSONObject("eco")?.let(::readEcoState) ?: EcoState(),
                 ),
                 startEnergy = o.optJSONObject("energy")?.let { e ->
                     EnergySnapshot(
@@ -176,7 +257,8 @@ class Storage(context: Context) {
                         .put("accel", s.harshAccel)
                         .put("brake", s.harshBrake)
                         .put("steer", s.harshSteer)
-                        .put("pke", s.positiveKineticSum),
+                        .put("pke", s.positiveKineticSum)
+                        .put("eco", writeEcoState(s.eco)),
                 )
                 .put("events", JSONArray().apply {
                     trip.events.forEach { e ->

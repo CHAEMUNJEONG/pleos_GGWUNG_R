@@ -224,9 +224,11 @@ class CoreLogicTest {
     @Test
     fun leagueNeedsMinimumDistanceAndIgnoresOtherWeeks() {
         val now = at(2026, 11, 14)
+        // 1km 미만 주행은 리그에 넣지 않는다
         val short = League.standing(listOf(tripAt(now, 100, km = 0.5)), now, seoul)
         assertNull(short.myRank)
-        assertEquals(0.5, short.myDistanceKm, 0.001)
+        assertEquals(0, short.myTripCount)
+        assertEquals(0.0, short.myDistanceKm, 0.001)
 
         val lastWeekOnly = League.standing(listOf(tripAt(at(2026, 11, 5), 100)), now, seoul)
         assertNull(lastWeekOnly.myRank)
@@ -642,5 +644,227 @@ class CoreLogicTest {
         assertEquals(result.score, liveTotal)
         assertEquals(result.ecoScore, liveEco)
         assertEquals(ScoreCalculator.total(result.safetyScore, result.ecoScore), result.score)
+    }
+
+    // ---- 에코 습관 항목 ----
+
+    /** 속도와 함께 1초마다 제한속도도 넣는다. */
+    private fun feedWithLimit(recorder: TripRecorder, startMs: Long, speeds: List<Double>, limit: Int): Long {
+        var t = startMs
+        for ((i, s) in speeds.withIndex()) {
+            if (i % 5 == 0) recorder.onSpeedLimit(t, limit)
+            recorder.onSpeed(t, s)
+            t += 200
+        }
+        return t
+    }
+
+    @Test
+    fun longStopCountsIdleBeyondGrace() {
+        val r = TripRecorder()
+        r.start()
+        var t = feed(r, 0, ramp(0.0, 40.0, 10.0) + hold(40.0, 120.0))
+        t = feed(r, t, ramp(40.0, 0.0, 10.0) + hold(0.0, 300.0)) // 5분 정차 → 2분은 신호 대기, 3분이 공회전
+        val d = r.currentEcoBreakdown
+        assertEquals(3.0, d.idleMin, 0.1)
+        assertEquals(70, d.idle)
+    }
+
+    @Test
+    fun trafficLightStopIsNotIdle() {
+        val r = TripRecorder()
+        r.start()
+        var t = feed(r, 0, ramp(0.0, 40.0, 10.0) + hold(40.0, 120.0))
+        t = feed(r, t, ramp(40.0, 0.0, 10.0) + hold(0.0, 90.0) + ramp(0.0, 40.0, 10.0))
+        assertEquals(100, r.currentEcoBreakdown.idle)
+    }
+
+    @Test
+    fun steadyCruiseBeatsWavyCruise() {
+        val steady = TripRecorder().apply { start() }
+        feed(steady, 0, ramp(0.0, 90.0, 30.0) + hold(90.0, 300.0))
+        val wavy = TripRecorder().apply { start() }
+        // 90 ↔ 100 km/h 를 5초마다 오르내린다 (1초에 2km/h 씩 변함)
+        val wave = (0 until 30).flatMap { ramp(90.0, 100.0, 5.0) + ramp(100.0, 90.0, 5.0) }
+        feed(wavy, 0, ramp(0.0, 90.0, 30.0) + wave)
+        val s = steady.currentEcoBreakdown.steady
+        val w = wavy.currentEcoBreakdown.steady
+        assertNotNull(s)
+        assertNotNull(w)
+        assertEquals(100, s)
+        // 계속 오르내리면 정속 점수가 크게 낮다
+        assertTrue(w!! <= 40)
+    }
+
+    @Test
+    fun shortCruiseHasNoSteadyItem() {
+        val r = TripRecorder().apply { start() }
+        feed(r, 0, ramp(0.0, 70.0, 20.0) + hold(70.0, 30.0) + ramp(70.0, 0.0, 20.0))
+        assertNull(r.currentEcoBreakdown.steady)
+    }
+
+    @Test
+    fun overSpeedUsesRoadSpeedLimit() {
+        // 시내(제한 50)에서 70km/h → 고속 주행
+        val city = TripRecorder().apply { start() }
+        feedWithLimit(city, 0, ramp(0.0, 70.0, 20.0) + hold(70.0, 120.0), 50)
+        assertEquals(0, city.currentEcoBreakdown.speed)
+        // 고속도로(제한 100)에서 105km/h → 오차 범위 안
+        val highway = TripRecorder().apply { start() }
+        feedWithLimit(highway, 0, ramp(0.0, 105.0, 30.0) + hold(105.0, 120.0), 100)
+        assertEquals(100, highway.currentEcoBreakdown.speed)
+    }
+
+    @Test
+    fun overSpeedFallsBackTo110WithoutLimit() {
+        val r = TripRecorder().apply { start() }
+        feed(r, 0, ramp(0.0, 130.0, 30.0) + hold(130.0, 120.0))
+        assertTrue(r.currentEcoBreakdown.overSpeedPercent!! >= 80)
+        assertEquals(0, r.currentEcoBreakdown.speed)
+    }
+
+    @Test
+    fun staleSpeedLimitIsIgnored() {
+        val r = TripRecorder().apply { start() }
+        r.onSpeedLimit(0, 50)
+        // 제한속도가 그 뒤로 오지 않으면 (터널, 내비 꺼짐) 모르는 것으로 보고 시속 110 기준을 쓴다
+        feed(r, 0, ramp(0.0, 70.0, 20.0) + hold(70.0, 120.0))
+        assertEquals(100, r.currentEcoBreakdown.speed)
+        // 마지막 제한속도 뒤 5초까지만 그 도로로 본다
+        assertTrue(r.currentRoadKm.total < 0.05)
+    }
+
+    @Test
+    fun coastingWithoutPedalScoresHigh() {
+        val coast = TripRecorder().apply { start() }
+        coast.onBrakePedal(0, false)
+        var t = 0L
+        repeat(4) { t = feed(coast, t, ramp(0.0, 50.0, 10.0) + hold(50.0, 20.0) + ramp(50.0, 0.0, 15.0)) }
+        assertEquals(100, coast.currentEcoBreakdown.coast)
+
+        val brake = TripRecorder().apply { start() }
+        t = 0L
+        repeat(4) {
+            t = feed(brake, t, ramp(0.0, 50.0, 10.0) + hold(50.0, 20.0))
+            brake.onBrakePedal(t, true)
+            t = feed(brake, t, ramp(50.0, 0.0, 15.0))
+            brake.onBrakePedal(t, false)
+        }
+        assertEquals(0, brake.currentEcoBreakdown.coast)
+    }
+
+    @Test
+    fun coastItemNeedsPedalSignal() {
+        val r = TripRecorder().apply { start() }
+        var t = 0L
+        repeat(4) { t = feed(r, t, ramp(0.0, 50.0, 10.0) + hold(50.0, 20.0) + ramp(50.0, 0.0, 15.0)) }
+        assertNull(r.currentEcoBreakdown.coast)
+    }
+
+    @Test
+    fun roadTypeComesFromSpeedLimit() {
+        // 막히는 고속도로: 평균 속도로는 시내지만 제한속도로는 고속도로
+        val r = TripRecorder().apply { start() }
+        val t = feedWithLimit(r, 0, ramp(0.0, 25.0, 10.0) + hold(25.0, 600.0), 100)
+        val result = r.finish(0, t)
+        assertEquals(RoadType.CITY, RoadType.of(result.averageSpeedKmh))
+        assertEquals(RoadType.HIGHWAY, result.roadType)
+        assertTrue(result.roadTypeFromLimit)
+        assertEquals(RoadType.MIXED, RoadType.ofLimit(80))
+        assertEquals(RoadType.CITY, RoadType.ofLimit(50))
+    }
+
+    @Test
+    fun ecoBreakdownSkipsMissingItems() {
+        assertEquals(80, EcoBreakdown(accel = 80).score())
+        // 가속 80 (비중 0.4) + 공회전 100 (비중 0.1) → 84
+        assertEquals(84, EcoBreakdown(accel = 80, idle = 100).score())
+        assertEquals(EcoItem.ACCEL, EcoBreakdown(accel = 70, idle = 100, steady = 95).weakest())
+        assertNull(EcoBreakdown(accel = 95, idle = 100).weakest())
+    }
+
+    @Test
+    fun resumeKeepsEcoHabits() {
+        val r = TripRecorder().apply { start() }
+        feed(r, 0, ramp(0.0, 40.0, 10.0) + hold(40.0, 60.0) + ramp(40.0, 0.0, 10.0) + hold(0.0, 300.0))
+        val before = r.currentEcoBreakdown
+        val again = TripRecorder()
+        again.resume(r.snapshot())
+        assertEquals(before.idleMin, again.currentEcoBreakdown.idleMin, 0.001)
+        assertEquals(before.idle, again.currentEcoBreakdown.idle)
+    }
+
+    @Test
+    fun finishStoresEcoDetail() {
+        val r = TripRecorder().apply { start() }
+        val t = feed(r, 0, ramp(0.0, 60.0, 20.0) + hold(60.0, 120.0) + ramp(60.0, 0.0, 20.0))
+        val live = r.currentEcoBreakdown
+        val result = r.finish(0, t)
+        assertEquals(live, result.ecoDetail)
+        assertEquals(live.score(), result.ecoScore)
+    }
+
+    // ---- 리그 공정성 ----
+
+    @Test
+    fun leagueIgnoresTinyTripsUsedForGaming() {
+        val now = at(2026, 11, 14)
+        // 주차장에서 0.5km 짜리 만점 주행을 10번 해도 순위에 오르지 않는다
+        val gaming = List(10) { tripAt(now - it * 60_000L, 100, km = 0.5) }
+        assertNull(League.standing(gaming, now, seoul).myRank)
+        // 평범한 10km 주행 하나에 섞어도 그 주행 점수만 본다
+        val mixed = League.standing(gaming + tripAt(now, 70, km = 10.0), now, seoul)
+        assertEquals(1, mixed.myTripCount)
+        assertEquals(70.0, mixed.myAverage!!, 0.001)
+    }
+
+    @Test
+    fun simulatedTripsHaveTheirOwnLeague() {
+        val now = at(2026, 11, 14)
+        val real = tripAt(now, 70, km = 30.0)
+        val sim = tripAt(now, 100, km = 30.0).copy(simulated = true)
+        val realLeague = League.standing(listOf(real, sim), now, seoul)
+        val simLeague = League.standing(listOf(real, sim), now, seoul, simulated = true)
+        assertEquals(70.0, realLeague.myAverage!!, 0.001)
+        assertEquals(100.0, simLeague.myAverage!!, 0.001)
+        assertEquals(1, realLeague.myTripCount)
+        assertEquals(1, simLeague.myTripCount)
+    }
+
+    // ---- 코칭 ----
+
+    @Test
+    fun ecoDeltaComparesWithRecentTrips() {
+        val history = listOf(70, 80, 90, 60, 70, 80).map { TripResult(0, 1, 10.0, 0, 0, 60.0, it, ecoScore = it) }
+        val now = TripResult(0, 1, 10.0, 0, 0, 60.0, 82, ecoScore = 82)
+        // 최근 5번 (80, 90, 60, 70, 80) 평균 76 → +6
+        assertEquals(6, Coaching.ecoDelta(now, history))
+        assertNull(Coaching.ecoDelta(now, history.take(1)))
+        assertEquals("평소보다 에코 +6점", Coaching.deltaText(6))
+        assertEquals("평소보다 에코 -3점", Coaching.deltaText(-3))
+    }
+
+    @Test
+    fun parkingSummaryReadsNaturally() {
+        val detail = EcoBreakdown(accel = 95, idle = 60, coast = 90)
+        val result = TripResult(0, 1, 10.0, 0, 0, 60.0, 82, ecoScore = 85, ecoDetail = detail)
+        assertEquals(
+            "주행 끝. 종합 82점이에요. 에코는 평소보다 6점 높아요. 공회전이 아쉬웠어요.",
+            Coaching.parkingSummary(result, 6),
+        )
+        val noWeak = result.copy(ecoDetail = EcoBreakdown(accel = 95))
+        assertEquals("주행 끝. 종합 82점이에요. 운전 습관이 모두 좋았어요.", Coaching.parkingSummary(noWeak, null))
+        assertEquals("적정 속도가", Coaching.withSubject("적정 속도"))
+        assertEquals("미리 감속이", Coaching.withSubject("미리 감속"))
+    }
+
+    @Test
+    fun hiddenTripsStillCountForLeague() {
+        val now = at(2026, 11, 14)
+        val trips = listOf(tripAt(now, 90, km = 30.0), tripAt(now - 60_000L, 70, km = 30.0))
+        val hidden = trips.mapIndexed { i, t -> if (i == 0) t.copy(hidden = true) else t }
+        // 목록에서 지워도 리그 점수는 그대로
+        assertEquals(League.standing(trips, now, seoul).myLeagueScore, League.standing(hidden, now, seoul).myLeagueScore)
+        assertEquals(2, League.standing(hidden, now, seoul).myTripCount)
     }
 }

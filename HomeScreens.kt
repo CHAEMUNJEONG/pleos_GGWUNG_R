@@ -1,5 +1,7 @@
 package com.kkwongal.drive.ui
 
+import androidx.compose.foundation.clickable
+import com.kkwongal.drive.core.TripResult
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -45,6 +47,7 @@ fun HomeScreen(
     onThemeMode: (ThemeMode) -> Unit,
     onOpenDiagnostics: () -> Unit,
     onVoiceGuide: (Boolean) -> Unit,
+    onOpenTrip: (TripResult) -> Unit = {},
 ) {
     val c = LocalKk.current
     val average = if (ui.trips.isEmpty()) null else ui.trips.map { it.score }.average()
@@ -89,7 +92,8 @@ fun HomeScreen(
                         }
                         else -> KkCard(m) {
                             val rank = ui.league?.myRank
-                            Text("이번 주 리그", color = c.muted, fontSize = 15.sp)
+                            // 시뮬레이션 기록은 실제 주행 리그와 섞지 않는다
+                        Text(if (ui.simulation) "이번 주 리그 · 시뮬레이션 기록끼리" else "이번 주 리그", color = c.muted, fontSize = 15.sp)
                             Row(verticalAlignment = Alignment.Bottom) {
                                 Text(if (rank == null) "–" else "$rank", color = c.accentText, fontSize = 44.sp, fontWeight = FontWeight.Bold)
                                 Text(
@@ -185,12 +189,14 @@ fun HomeScreen(
                 }
             }
         }
-        val recent = ui.trips.asReversed().take(20)
+        // 지운 기록은 목록에서만 뺀다 (평균 점수·리그에는 그대로 쓴다)
+        val recent = ui.trips.filterNot { it.hidden }.asReversed().take(20)
         if (recent.isNotEmpty()) {
             item { Text("최근 주행", color = c.muted, fontSize = 15.sp, modifier = Modifier.padding(top = 4.dp)) }
         }
         items(recent) { trip ->
-            KkCard(Modifier.fillMaxWidth(), padding = 14.dp) {
+            // 누르면 그 주행의 리포트를 다시 본다
+            KkCard(Modifier.fillMaxWidth().clickable(onClick = rememberFeedbackClick { onOpenTrip(trip) }), padding = 14.dp) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     Box(Modifier.size(52.dp), contentAlignment = Alignment.Center) {
                         RingGauge(trip.score / 100f, c.accent, c.track, 5.dp, Modifier.fillMaxSize())
@@ -210,6 +216,7 @@ fun HomeScreen(
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Medium,
                     )
+                    Text("›", color = c.muted, fontSize = 22.sp)
                 }
             }
         }
@@ -218,7 +225,7 @@ fun HomeScreen(
 
 /** 이번 주 순위표. 다른 운전자는 시연용 가상 데이터다. */
 @Composable
-fun LeagueScreen(league: LeagueStanding?, earnedPoints: Int) {
+fun LeagueScreen(league: LeagueStanding?, earnedPoints: Int, simulation: Boolean = false) {
     val c = LocalKk.current
     if (league == null) return
     val rank = league.myRank
@@ -227,7 +234,7 @@ fun LeagueScreen(league: LeagueStanding?, earnedPoints: Int) {
             KkCard(Modifier.fillMaxWidth(), highlighted = rank != null) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text("이번 주 리그", color = c.muted, fontSize = 15.sp)
+                        Text(if (simulation) "이번 주 리그 · 시뮬레이션 기록끼리" else "이번 주 리그", color = c.muted, fontSize = 15.sp)
                         if (rank != null) {
                             Row(verticalAlignment = Alignment.Bottom) {
                                 Text("$rank", color = c.accentText, fontSize = 44.sp, fontWeight = FontWeight.Bold)
@@ -247,7 +254,7 @@ fun LeagueScreen(league: LeagueStanding?, earnedPoints: Int) {
                         } else {
                             Text("아직 순위에 없어요", color = c.text, fontSize = 24.sp, fontWeight = FontWeight.Bold)
                             Text(
-                                "이번 주에 1km 이상 달리면 순위에 올라요 (지금 ${fmt(league.myDistanceKm, 1)} km)",
+                                "1km 넘게 달린 주행으로 이번 주 1km 이상 채우면 순위에 올라요 (지금 ${fmt(league.myDistanceKm, 1)} km)",
                                 color = c.muted, fontSize = 15.sp,
                             )
                         }
@@ -318,38 +325,54 @@ fun SimPanel(ui: UiState, vm: KkwongalViewModel) {
     KkCard(Modifier.fillMaxWidth(), padding = 14.dp, background = c.surface2) {
         Text("시뮬레이션 · ${fmt(speed.toDouble(), 0)} km/h", color = c.muted, fontSize = 14.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            KkButton("출발 D", { vm.simSetParked(false) }, Modifier.weight(1f), ButtonKind.PRIMARY)
-            KkButton("주차 P", { vm.simSetParked(true) }, Modifier.weight(1f), ButtonKind.PRIMARY)
-        }
-        Spacer(Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            KkButton("+30", { vm.simSetSpeed(speed + 30.0) }, Modifier.weight(1f))
-            KkButton("−30", { vm.simSetSpeed(speed - 30.0) }, Modifier.weight(1f))
-            KkButton("급조향", { vm.simJerkSteering() }, Modifier.weight(1f), ButtonKind.DANGER)
-        }
-        Slider(
-            value = speed.coerceIn(0f, 120f),
-            onValueChange = { vm.simSetSpeed(it.toDouble()) },
-            valueRange = 0f..120f,
-            colors = SliderDefaults.colors(
-                thumbColor = c.accent,
-                activeTrackColor = c.accent,
-                inactiveTrackColor = c.track,
-            ),
-        )
-        Text("목적지", color = c.muted, fontSize = 13.sp)
-        Spacer(Modifier.height(4.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            SIM_PLACES.forEach { place ->
-                KkButton(place.label, { vm.simSetLocation(place.point, place.name, place.address) }, Modifier.weight(1f))
+        // 발표용: 정해진 시나리오로 출발부터 주차까지 자동으로 달린다
+        val demoStep = ui.demoStep
+        if (demoStep != null) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("시연 · $demoStep", color = c.accentText, fontSize = 15.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                KkButton("시연 멈춤", { vm.simStopDemo() })
             }
+        } else {
+            KkButton(
+                "시연 시작 (자동 주행 약 1분 30초)",
+                { vm.simRunDemo() },
+                Modifier.fillMaxWidth(),
+                ButtonKind.PRIMARY,
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                KkButton("출발 D", { vm.simSetParked(false) }, Modifier.weight(1f), ButtonKind.PRIMARY)
+                KkButton("주차 P", { vm.simSetParked(true) }, Modifier.weight(1f), ButtonKind.PRIMARY)
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                KkButton("+30", { vm.simSetSpeed(speed + 30.0) }, Modifier.weight(1f))
+                KkButton("−30", { vm.simSetSpeed(speed - 30.0) }, Modifier.weight(1f))
+                KkButton("급조향", { vm.simJerkSteering() }, Modifier.weight(1f), ButtonKind.DANGER)
+            }
+            Slider(
+                value = speed.coerceIn(0f, 120f),
+                onValueChange = { vm.simSetSpeed(it.toDouble()) },
+                valueRange = 0f..120f,
+                colors = SliderDefaults.colors(
+                    thumbColor = c.accent,
+                    activeTrackColor = c.accent,
+                    inactiveTrackColor = c.track,
+                ),
+            )
+            Text("목적지", color = c.muted, fontSize = 13.sp)
+            Spacer(Modifier.height(4.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                SIM_PLACES.forEach { place ->
+                    KkButton(place.label, { vm.simSetLocation(place.point, place.name, place.address) }, Modifier.weight(1f))
+                }
+            }
+            Text(
+                "목적지를 고르고 출발 → 속도 올리기 → 주차하면 그곳에 알이 놓여요",
+                color = c.muted, fontSize = 12.sp, textAlign = TextAlign.Start,
+                modifier = Modifier.padding(top = 6.dp),
+            )
         }
-        Text(
-            "목적지를 고르고 출발 → 속도 올리기 → 주차하면 그곳에 알이 놓여요",
-            color = c.muted, fontSize = 12.sp, textAlign = TextAlign.Start,
-            modifier = Modifier.padding(top = 6.dp),
-        )
     }
 }
 

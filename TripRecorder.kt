@@ -54,6 +54,10 @@ data class ScoreConfig(
      * 꿩알의 주제는 에코 드라이빙이라 에코 60%, 안전 40%. 부드럽게 운전하면 안전은 자연히 따라온다.
      */
     val safetyWeight: Double = 0.4,
+    /** 정속·적정 속도·미리 감속·공회전 기준과 항목별 비중. */
+    val eco: EcoConfig = EcoConfig(),
+    /** 내비 제한속도가 이 시간 넘게 오지 않으면 모르는 것으로 본다. */
+    val speedLimitStaleMs: Long = 5_000L,
 )
 
 object ScoreCalculator {
@@ -75,7 +79,7 @@ object ScoreCalculator {
     }
 
     /**
-     * 에코 점수(추정): 1m 를 가는 동안 속도를 올리는 데 쓴 에너지가 적을수록 높다.
+     * 가속 점수: 1m 를 가는 동안 속도를 올리는 데 쓴 에너지가 적을수록 높다.
      * 연료 소비를 직접 재는 것이 아니라 속도 변화 패턴으로 추정한 값이다.
      */
     fun eco(pke: Double, config: ScoreConfig = ScoreConfig()): Int {
@@ -111,6 +115,8 @@ data class TripSnapshot(
     val harshBrake: Int,
     val harshSteer: Int,
     val positiveKineticSum: Double,
+    /** 에코 습관 누적 값. 이전 버전 저장 파일에는 없어서 기본값. */
+    val eco: EcoState = EcoState(),
 )
 
 /**
@@ -145,6 +151,10 @@ class TripRecorder(private val config: ScoreConfig = ScoreConfig()) {
     /** 속도를 올릴 때마다 늘어난 (속도 제곱)의 합. 단위 m²/s². */
     private var positiveKineticSum = 0.0
 
+    private val ecoTracker = EcoTracker(config.eco)
+    private var speedLimitKmh: Int? = null
+    private var speedLimitAtMs = 0L
+
     val isActive: Boolean get() = active
     val currentDistanceKm: Double get() = distanceKm
     val currentHarshAccel: Int get() = harshAccel
@@ -154,8 +164,15 @@ class TripRecorder(private val config: ScoreConfig = ScoreConfig()) {
     /** 지금까지의 안전 점수. 주행 중 화면에 실시간으로 보여 준다. */
     val currentSafetyScore: Int get() = ScoreCalculator.score(distanceKm, harshAccel, harshBrake, config, harshSteer)
 
-    /** 지금까지의 에코 점수 (속도 패턴 추정). 주행이 끝나면 실제 연비가 반영될 수 있다. */
-    val currentEcoScore: Int get() = ScoreCalculator.eco(currentPke(), config)
+    /** 지금까지의 에코 항목별 점수. */
+    val currentEcoBreakdown: EcoBreakdown
+        get() = ecoTracker.breakdown(ScoreCalculator.eco(currentPke(), config), distanceKm)
+
+    /** 지금까지의 에코 점수 (운전 습관 항목의 가중 평균). 주행이 끝나면 실제 연비가 반영될 수 있다. */
+    val currentEcoScore: Int get() = currentEcoBreakdown.score(config.eco)
+
+    /** 내비 제한속도로 나눈 도로 종류별 거리. */
+    val currentRoadKm: RoadKm get() = ecoTracker.state.roadKm
 
     /** 지금까지의 종합 점수 (에코 60% + 안전 40%). 주행 중 화면의 게이지에 쓴다. */
     val currentTotalScore: Int get() = ScoreCalculator.total(currentSafetyScore, currentEcoScore, config)
@@ -183,6 +200,9 @@ class TripRecorder(private val config: ScoreConfig = ScoreConfig()) {
         brakeReleasedAtMs = null
         inSteerEvent = false
         lastSpeedKmh = 0.0
+        ecoTracker.reset()
+        speedLimitKmh = null
+        speedLimitAtMs = 0L
     }
 
     /** 지금까지의 누적 값. */
@@ -193,6 +213,7 @@ class TripRecorder(private val config: ScoreConfig = ScoreConfig()) {
         harshBrake = harshBrake,
         harshSteer = harshSteer,
         positiveKineticSum = positiveKineticSum,
+        eco = ecoTracker.state,
     )
 
     /**
@@ -207,6 +228,27 @@ class TripRecorder(private val config: ScoreConfig = ScoreConfig()) {
         harshBrake = snapshot.harshBrake
         harshSteer = snapshot.harshSteer
         positiveKineticSum = snapshot.positiveKineticSum
+        ecoTracker.reset(snapshot.eco)
+    }
+
+    /**
+     * 내비가 알려 준 지금 도로의 제한속도 (Pleos NaviHelper onCurrentRoadSpeedLimit, 1초마다).
+     * 0 이하는 모르는 것으로 본다. [timeMs] 는 속도 값과 같은 시계.
+     */
+    fun onSpeedLimit(timeMs: Long, limitKmh: Int) {
+        speedLimitKmh = limitKmh.takeIf { it > 0 }
+        speedLimitAtMs = timeMs
+    }
+
+    private fun limitAt(timeMs: Long): Int? =
+        speedLimitKmh?.takeIf { timeMs - speedLimitAtMs <= config.speedLimitStaleMs }
+
+    /** 브레이크를 밟고 있는지 (뗀 직후 포함). 페달 신호를 받지 못했으면 null. */
+    private fun pedalAt(timeMs: Long): Boolean? {
+        if (!brakeSignalKnown) return null
+        if (brakePressed) return true
+        val released = brakeReleasedAtMs
+        return released != null && timeMs - released <= config.brakePedalGraceMs
     }
 
     /** 브레이크 페달 상태가 바뀔 때. [timeMs] 는 속도 값과 같은 시계. */
@@ -218,11 +260,8 @@ class TripRecorder(private val config: ScoreConfig = ScoreConfig()) {
 
     /** 급제동 기준을 넘는 감속을 급정거로 셀지. 페달 신호가 없으면 감속만 본다. */
     private fun brakeCounts(timeMs: Long, decelKmhPerSec: Double): Boolean {
-        if (!brakeSignalKnown) return true
-        if (brakePressed) return true
-        val released = brakeReleasedAtMs
-        if (released != null && timeMs - released <= config.brakePedalGraceMs) return true
-        return decelKmhPerSec >= config.harshBrakeNoPedalKmhPerSec
+        val pedal = pedalAt(timeMs) ?: return true
+        return pedal || decelKmhPerSec >= config.harshBrakeNoPedalKmhPerSec
     }
 
     /** 속도 값을 하나 넣는다. 이 값으로 급출발·급정거가 새로 감지되면 그 내용을 돌려준다. */
@@ -238,7 +277,9 @@ class TripRecorder(private val config: ScoreConfig = ScoreConfig()) {
             if (dtMs <= 0) return null
             if (dtMs <= config.maxGapMs) {
                 // 사다리꼴 적분: 평균 속도 x 시간
-                distanceKm += (last.speedKmh + speed) / 2.0 * dtMs / 3_600_000.0
+                val km = (last.speedKmh + speed) / 2.0 * dtMs / 3_600_000.0
+                distanceKm += km
+                ecoTracker.onSegment(timeMs, dtMs, last.speedKmh, speed, km, limitAt(timeMs), pedalAt(timeMs))
                 if (speed > last.speedKmh) {
                     val before = last.speedKmh / 3.6
                     val after = speed / 3.6
@@ -249,6 +290,7 @@ class TripRecorder(private val config: ScoreConfig = ScoreConfig()) {
                 window.clear()
                 inAccelEvent = false
                 inBrakeEvent = false
+                ecoTracker.gap()
             }
         }
         window.addLast(Sample(timeMs, speed))
@@ -333,7 +375,8 @@ class TripRecorder(private val config: ScoreConfig = ScoreConfig()) {
     fun finish(startWallTimeMs: Long, endWallTimeMs: Long): TripResult {
         active = false
         val safety = currentSafetyScore
-        val eco = currentEcoScore
+        val detail = currentEcoBreakdown
+        val eco = detail.score(config.eco)
         return TripResult(
             startTimeMs = startWallTimeMs,
             endTimeMs = endWallTimeMs,
@@ -345,6 +388,8 @@ class TripRecorder(private val config: ScoreConfig = ScoreConfig()) {
             safetyScore = safety,
             ecoScore = eco,
             harshSteerCount = harshSteer,
+            ecoDetail = detail,
+            roadKm = currentRoadKm,
         )
     }
 }

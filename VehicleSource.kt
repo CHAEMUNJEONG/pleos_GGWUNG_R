@@ -18,6 +18,9 @@ data class SteeringSample(val timeMs: Long, val angleDeg: Double)
 /** 브레이크 페달 상태가 바뀐 순간. timeMs 는 속도 값과 같은 시계. */
 data class BrakeSample(val timeMs: Long, val pressed: Boolean)
 
+/** 내비가 알려 준 지금 도로의 제한속도 (km/h). 0 이하는 모름. timeMs 는 속도 값과 같은 시계. */
+data class SpeedLimitSample(val timeMs: Long, val limitKmh: Int)
+
 /** 내비가 알려 준 목적지 도착. wallTimeMs 는 실제 시각(System.currentTimeMillis). */
 data class ArrivedPlace(val name: String, val wallTimeMs: Long)
 
@@ -40,6 +43,9 @@ interface VehicleSource {
 
     /** 브레이크 페달을 밟고 뗄 때마다 하나씩. 받을 수 없는 차량이면 아무것도 오지 않는다. */
     val brakeSamples: SharedFlow<BrakeSample>
+
+    /** 지금 도로의 제한속도. 내비가 1초마다 알려 준다. 받을 수 없으면 아무것도 오지 않는다. */
+    val speedLimitSamples: SharedFlow<SpeedLimitSample>
 
     /** 마지막으로 알려진 위치. 없으면 null. */
     val location: StateFlow<GeoPoint?>

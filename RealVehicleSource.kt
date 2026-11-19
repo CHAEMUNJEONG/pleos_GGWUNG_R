@@ -15,6 +15,7 @@ import com.kkwongal.drive.core.ChannelStatus
 import com.kkwongal.drive.core.DiagnosticsBoard
 import com.kkwongal.drive.core.EnergySnapshot
 import com.kkwongal.drive.core.GeoPoint
+import com.kkwongal.drive.core.RoadType
 import com.kkwongal.drive.core.SpeedDriveDetector
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -53,6 +54,7 @@ class RealVehicleSource(context: Context) : VehicleSource {
     private val _location = MutableStateFlow<GeoPoint?>(null)
     private val _address = MutableStateFlow<String?>(null)
     private val _arrivedPlace = MutableStateFlow<ArrivedPlace?>(null)
+    private val _speedLimitSamples = MutableSharedFlow<SpeedLimitSample>(extraBufferCapacity = 16)
     private val _uxRestricted = MutableStateFlow(true) // 확인 전에는 제한된 것으로 본다
     private val _status = MutableStateFlow("차량 연결 중")
     private val _diagnostics = MutableStateFlow<Map<Channel, ChannelState>>(emptyMap())
@@ -71,6 +73,7 @@ class RealVehicleSource(context: Context) : VehicleSource {
     override val location: StateFlow<GeoPoint?> = _location.asStateFlow()
     override val address: StateFlow<String?> = _address.asStateFlow()
     override val arrivedPlace: StateFlow<ArrivedPlace?> = _arrivedPlace.asStateFlow()
+    override val speedLimitSamples: SharedFlow<SpeedLimitSample> = _speedLimitSamples.asSharedFlow()
     override val uxRestricted: StateFlow<Boolean> = _uxRestricted.asStateFlow()
     override val status: StateFlow<String> = _status.asStateFlow()
     override val diagnostics: StateFlow<Map<Channel, ChannelState>> = _diagnostics.asStateFlow()
@@ -97,11 +100,20 @@ class RealVehicleSource(context: Context) : VehicleSource {
             if (name.isNotBlank()) _arrivedPlace.value = ArrivedPlace(name, System.currentTimeMillis())
             board.ok(Channel.ARRIVAL, name.ifBlank { "이름 없는 목적지" })
         },
+        onSpeedLimit = { limit ->
+            _speedLimitSamples.tryEmit(SpeedLimitSample(SystemClock.elapsedRealtime(), limit))
+            if (limit > 0) {
+                board.ok(Channel.SPEED_LIMIT, "$limit km/h · ${RoadType.ofLimit(limit).label}")
+            } else {
+                board.waiting(Channel.SPEED_LIMIT, "이 도로의 제한속도 정보가 없어요")
+            }
+        },
         onStatus = { message ->
             _status.value = message
             if (message.contains("실패")) {
                 board.unavailable(Channel.LOCATION, message)
                 board.unavailable(Channel.ARRIVAL, message)
+                board.unavailable(Channel.SPEED_LIMIT, message)
             } else {
                 // 이미 값을 받은 항목은 그대로 둔다
                 if (board.current[Channel.LOCATION]?.status != ChannelStatus.OK) {
@@ -109,6 +121,9 @@ class RealVehicleSource(context: Context) : VehicleSource {
                 }
                 if (board.current[Channel.ARRIVAL]?.status != ChannelStatus.OK) {
                     board.waiting(Channel.ARRIVAL, "내비 연결됨 · 목적지에 도착하면 받아요")
+                }
+                if (board.current[Channel.SPEED_LIMIT]?.status != ChannelStatus.OK) {
+                    board.waiting(Channel.SPEED_LIMIT, "내비 연결됨 · 제한속도 기다리는 중")
                 }
             }
         },
