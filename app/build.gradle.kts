@@ -38,6 +38,10 @@ android {
 
 dependencies {
     implementation(libs.pleos.navihelper)
+    // 핸들 각도 (급조향 감지)
+    implementation(libs.pleos.vehicle)
+    // 감점 음성 안내 (Pleos Gleo AI TextToSpeech SDK)
+    implementation(libs.pleos.tts)
     // 여행 지도: 오픈스트리트맵 지도 표시
     implementation(libs.osmdroid)
 
