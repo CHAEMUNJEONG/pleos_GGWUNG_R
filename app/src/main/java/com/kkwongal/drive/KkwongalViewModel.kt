@@ -31,6 +31,10 @@ import com.kkwongal.drive.vehicle.FakeVehicleSource
 import com.kkwongal.drive.vehicle.RealVehicleSource
 import com.kkwongal.drive.vehicle.VehicleSource
 import com.kkwongal.drive.integration.StampNameResolver
+import com.kkwongal.drive.integration.LeagueClient
+import com.kkwongal.drive.integration.LeagueReply
+import com.kkwongal.drive.integration.TripUploadDto
+import com.kkwongal.drive.integration.UploadReply
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -84,6 +88,9 @@ class KkwongalViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 시연 모드 진행 작업. */
     private var demoJob: Job? = null
+    private val remoteLeague = BuildConfig.LEAGUE_API_BASE_URL.isNotBlank()
+    private var leagueClient: LeagueClient? = null
+    private var leagueJob: Job? = null
 
     private val _ui: MutableStateFlow<UiState>
     val ui: StateFlow<UiState>
@@ -105,29 +112,103 @@ class KkwongalViewModel(app: Application) : AndroidViewModel(app) {
                 badges = BadgeRules.evaluate(trips, stampBook.stamps),
                 league = leagueNow(),
                 earnedPoints = pointsNow(),
+                remoteLeague = remoteLeague,
+                leagueStatus = if (remoteLeague) "접속 토큰을 입력해 주세요" else "시연용 가상 리그 · 가상 포인트",
             ),
         )
         ui = _ui.asStateFlow()
     }
 
-    private fun leagueNow(): LeagueStanding =
-        League.standing(trips, System.currentTimeMillis(), ZoneId.systemDefault(), simulated = simulationMode)
+    private fun leagueNow(): LeagueStanding? = if (remoteLeague) null else
+        League.standing(trips, System.currentTimeMillis(), ZoneId.of("Asia/Seoul"), simulated = simulationMode)
 
     private fun pointsNow(): Int =
-        League.earnedPoints(trips, System.currentTimeMillis(), ZoneId.systemDefault(), simulated = simulationMode)
+        if (remoteLeague) 0 else League.earnedPoints(trips, System.currentTimeMillis(), ZoneId.of("Asia/Seoul"), simulated = simulationMode)
 
     /** 기록·스탬프가 바뀐 뒤 화면 상태에 함께 반영할 값들 (기록, 스탬프, 배지, 리그, 포인트). */
     private fun UiState.withRecords(): UiState = copy(
         trips = this@KkwongalViewModel.trips,
         stamps = stampBook.stamps,
         badges = BadgeRules.evaluate(this@KkwongalViewModel.trips, stampBook.stamps),
-        league = leagueNow(),
-        earnedPoints = pointsNow(),
+        league = if (remoteLeague) league else leagueNow(),
+        earnedPoints = if (remoteLeague) earnedPoints else pointsNow(),
     )
 
     /** 주가 바뀌었을 수 있으니 화면에 돌아올 때 순위표를 다시 계산한다. */
     fun refreshLeague() {
-        _ui.update { it.copy(league = leagueNow(), earnedPoints = pointsNow()) }
+        if (_ui.value.leagueBusy) return
+        if (!remoteLeague) {
+            _ui.update { it.copy(league = leagueNow(), earnedPoints = pointsNow()) }
+            return
+        }
+        val client = leagueClient ?: return
+        val mode = simulationMode
+        _ui.update { it.copy(leagueBusy = true, leagueStatus = "서버 리그 불러오는 중") }
+        leagueJob = viewModelScope.launch { loadRemoteLeague(client, mode) }
+    }
+
+    /** Development token lives only in this ViewModel session. */
+    fun connectLeague(token: String) {
+        if (!remoteLeague) return
+        val value = token.trim()
+        if (value.isEmpty() || value.length > 200 || value.any { it.code !in 33..126 }) {
+            _ui.update { it.copy(leagueStatus = "발급받은 접속 토큰을 확인해 주세요") }
+            return
+        }
+        val client = runCatching { LeagueClient.create(BuildConfig.LEAGUE_API_BASE_URL,
+            token = { value }, allowLocalHttp = BuildConfig.DEBUG && BuildConfig.ALLOW_LOCAL_LEAGUE_HTTP) }.getOrNull()
+        if (client == null) {
+            _ui.update { it.copy(leagueStatus = "서버 주소 설정을 확인해 주세요") }
+            return
+        }
+        leagueJob?.cancel()
+        leagueClient = client
+        _ui.update { it.copy(league = null, earnedPoints = 0, leagueBusy = false, leagueConnected = false) }
+        refreshLeague()
+    }
+
+    fun disconnectLeague() {
+        leagueJob?.cancel()
+        leagueClient = null
+        _ui.update { it.copy(league = null, earnedPoints = 0, leagueBusy = false,
+            leagueConnected = false, leagueStatus = "서버 연결 해제됨") }
+    }
+
+    fun uploadLatestTrip() {
+        val client = leagueClient ?: return
+        if (_ui.value.leagueBusy || !_ui.value.leagueConnected || recorder.isActive) return
+        val mode = simulationMode
+        val trip = trips.lastOrNull { it.simulated == mode } ?: return
+        val zone = ZoneId.of("Asia/Seoul")
+        if (League.weekStartMs(trip.endTimeMs, zone) != League.weekStartMs(System.currentTimeMillis(), zone)) {
+            _ui.update { it.copy(leagueStatus = "이번 주에 끝난 주행만 전송할 수 있어요") }
+            return
+        }
+        _ui.update { it.copy(leagueBusy = true, leagueStatus = "최근 주행 1건 전송 중") }
+        leagueJob = viewModelScope.launch {
+            when (val reply = client.submit(TripUploadDto.from(trip))) {
+                is UploadReply.Success -> loadRemoteLeague(client, mode,
+                    if (reply.duplicate) "이미 전송된 주행 · 중복 집계하지 않음" else "전송 완료")
+                is UploadReply.Failed -> if (leagueClient === client && simulationMode == mode) {
+                    _ui.update { it.copy(leagueBusy = false,
+                        leagueStatus = "전송 실패 (${reply.httpStatus ?: reply.reason}) · 재시도 가능") }
+                }
+            }
+        }
+    }
+
+    private suspend fun loadRemoteLeague(client: LeagueClient, mode: Boolean, prefix: String = "개발 서버") {
+        val week = League.weekStartMs(System.currentTimeMillis(), ZoneId.of("Asia/Seoul"))
+        val reply = client.weekly(week, mode)
+        if (leagueClient !== client || simulationMode != mode) return
+        when (reply) {
+            is LeagueReply.Success -> _ui.update { it.copy(league = reply.snapshot.standing,
+                earnedPoints = reply.snapshot.earnedPoints, leagueBusy = false, leagueConnected = true,
+                leagueStatus = "$prefix · ${if (mode) "시뮬레이션" else "실제 주행"} 리그 · 가상 포인트") }
+            is LeagueReply.Failed -> _ui.update { it.copy(league = null, earnedPoints = 0,
+                leagueBusy = false, leagueConnected = false,
+                leagueStatus = "서버 조회 실패 (${reply.httpStatus ?: reply.reason})") }
+        }
     }
 
     /** 실제 차량 연결을 시도하고, 안 되면 시뮬레이션으로 넘어간다. 이미 시작했으면 아무것도 하지 않는다. */
@@ -157,8 +238,13 @@ class KkwongalViewModel(app: Application) : AndroidViewModel(app) {
         }
         source = newSource
         simulationMode = simulation
+        if (remoteLeague) {
+            leagueJob?.cancel()
+            _ui.update { it.copy(league = null, earnedPoints = 0, leagueBusy = false, leagueConnected = false) }
+        }
         _ui.update { it.copy(simulation = simulation, notice = fallbackNotice, demoStep = null).withRecords() }
         attach(newSource)
+        if (remoteLeague) refreshLeague()
     }
 
     private fun attach(s: VehicleSource) {
@@ -575,6 +661,8 @@ class KkwongalViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     override fun onCleared() {
+        leagueJob?.cancel()
+        leagueClient = null
         stopDemo()
         voice.release()
         saveOngoing()

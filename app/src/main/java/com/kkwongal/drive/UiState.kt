@@ -60,6 +60,10 @@ data class UiState(
     val league: LeagueStanding? = null,
     /** 지난 주들까지 받은 가상 포인트 합계. */
     val earnedPoints: Int = 0,
+    val remoteLeague: Boolean = false,
+    val leagueConnected: Boolean = false,
+    val leagueBusy: Boolean = false,
+    val leagueStatus: String = "시연용 가상 리그 · 가상 포인트",
     /** 화면 테마: 자동(차량 주야간을 따름) / 밝게 / 어둡게. */
     val themeMode: ThemeMode = ThemeMode.AUTO,
     /** 방금 끝난 주행에서 급조작이 일어난 시점들. 리포트의 시간 막대에 쓴다. */

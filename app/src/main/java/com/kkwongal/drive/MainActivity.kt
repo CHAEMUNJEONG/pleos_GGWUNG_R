@@ -42,6 +42,7 @@ import com.kkwongal.drive.ui.DrivingScreen
 import com.kkwongal.drive.ui.HomeScreen
 import com.kkwongal.drive.ui.KkTheme
 import com.kkwongal.drive.ui.LeagueScreen
+import com.kkwongal.drive.ui.ServerLeagueScreen
 import com.kkwongal.drive.ui.LocalKk
 import com.kkwongal.drive.ui.Logo
 import com.kkwongal.drive.ui.MapScreen
@@ -179,7 +180,8 @@ private fun KkwongalContent(ui: UiState, vm: KkwongalViewModel) {
                             onOpenTrip = vm::openTrip,
                         )
                         tab == 1 -> MapScreen(ui.stamps, onSaveStamp = vm::saveStamp, onNavigate = vm::navigateTo)
-                        else -> LeagueScreen(ui.league, ui.earnedPoints, ui.simulation)
+                        else -> if (ui.remoteLeague) ServerLeagueScreen(ui, vm)
+                            else LeagueScreen(ui.league, ui.earnedPoints, ui.simulation)
                     }
                 }
                 if (showSim && wide) {
