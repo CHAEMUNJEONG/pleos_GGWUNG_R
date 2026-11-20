@@ -30,6 +30,7 @@ import com.kkwongal.drive.vehicle.DriveState
 import com.kkwongal.drive.vehicle.FakeVehicleSource
 import com.kkwongal.drive.vehicle.RealVehicleSource
 import com.kkwongal.drive.vehicle.VehicleSource
+import com.kkwongal.drive.integration.StampNameResolver
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -433,7 +434,7 @@ class KkwongalViewModel(app: Application) : AndroidViewModel(app) {
         trips = trips + result
         val stamp = finished.stoppedAt?.let {
             val perfect = result.harshAccelCount + result.harshBrakeCount + result.harshSteerCount == 0
-            stampBook.tryAdd(it, result.endTimeMs, result.score, placeNameFor(finished.startWallMs), perfect)
+            stampBook.tryAdd(it, result.endTimeMs, result.score, placeNameFor(finished.startWallMs, it), perfect)
         }
         persist()
         lastFinished = finished.copy(result = result, stamp = stamp)
@@ -457,13 +458,9 @@ class KkwongalViewModel(app: Application) : AndroidViewModel(app) {
      * 스탬프 이름을 자동으로 정한다. 이번 주행 중에 내비가 알려 준 목적지 이름을 먼저 쓰고,
      * 없으면 현재 위치의 주소를 쓴다. 둘 다 없으면 null (기본 이름 "새로운 장소 N").
      */
-    private fun placeNameFor(tripStartMs: Long): String? {
-        val arrived = source?.arrivedPlace?.value
-        if (arrived != null && arrived.wallTimeMs >= tripStartMs && arrived.name.isNotBlank()) {
-            return arrived.name.trim()
-        }
-        return source?.address?.value?.trim()?.takeIf { it.isNotBlank() }
-    }
+    private fun placeNameFor(tripStartMs: Long, parkedAt: GeoPoint): String? =
+        StampNameResolver.resolve(source?.arrivedPlace?.value, source?.address?.value,
+            source?.addressUpdatedAtMs?.value, parkedAt, tripStartMs, System.currentTimeMillis())
 
     /** 스탬프의 이름·메모·태그를 저장한다. */
     /** 여행 지도에서: 이 알이 있는 곳으로 내비 길 안내를 시작한다 (Pleos NaviHelper requestRoute). */

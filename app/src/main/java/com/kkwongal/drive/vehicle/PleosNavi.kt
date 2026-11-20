@@ -3,6 +3,7 @@ package com.kkwongal.drive.vehicle
 import ai.pleos.playground.navi.data.CurrentLocationInfo
 import ai.pleos.playground.navi.constants.NaviErrorCode
 import ai.pleos.playground.navi.data.DestinationArrivedInfo
+import ai.pleos.playground.navi.data.DestinationInfo
 import ai.pleos.playground.navi.data.RouteInfo
 import ai.pleos.playground.navi.helper.NaviHelper
 import ai.pleos.playground.navi.helper.listener.NaviHelperEventListener
@@ -19,15 +20,17 @@ import com.kkwongal.drive.core.GeoPoint
 class PleosNavi(
     private val context: Context,
     private val onLocation: (GeoPoint, String) -> Unit,
-    private val onArrived: (String) -> Unit,
+    private val onArrived: (String, GeoPoint?) -> Unit,
     private val onSpeedLimit: (Int) -> Unit,
     private val onStatus: (String) -> Unit,
 ) {
     private var navi: NaviHelper? = null
     private var connected = false
+    private var destinationPoint: GeoPoint? = null
+    private var listener: NaviHelperEventListener? = null
 
-    private val listener = object : NaviHelperEventListener {
-        override fun onCurrentLocationInfo(currentLocationInfo: CurrentLocationInfo) {
+    private fun listenerFor(helper: NaviHelper) = object : NaviHelperEventListener {
+        override fun onCurrentLocationInfo(currentLocationInfo: CurrentLocationInfo) = active(helper) {
             onLocation(
                 GeoPoint(
                     currentLocationInfo.latitude.toDouble(),
@@ -37,20 +40,42 @@ class PleosNavi(
             )
         }
 
-        override fun onDestinationArrived(info: DestinationArrivedInfo) {
+        override fun onDestinationArrived(info: DestinationArrivedInfo) = active(helper) {
             // 목적지 이름 (예: 강릉 안목해변). 스탬프 이름으로 쓴다.
-            onArrived(info.name)
+            // Arrival data has a name but no coordinates in navi-data 3.0.4.
+            onArrived(info.name, destinationPoint)
         }
 
-        override fun onCurrentRoadSpeedLimit(speedLimit: Int) {
+        override fun onDestinationInfo(info: DestinationInfo) = active(helper) {
+            destinationPoint = GeoPoint(info.latitude, info.longitude)
+        }
+
+        override fun onDestinationChanged() = active(helper) {
+            destinationPoint = null
+            onArrived("", null)
+            runCatching { helper.getDestinationInfo() }
+                .onFailure { onStatus("목적지 정보 조회 실패") }
+        }
+
+        override fun onRouteCancelled() = active(helper) {
+            destinationPoint = null
+            onArrived("", null)
+        }
+
+        override fun onCurrentRoadSpeedLimit(speedLimit: Int) = active(helper) {
             // 도로 종류(시내·국도·고속도로)와 적정 속도 판단에 쓴다
             onSpeedLimit(speedLimit)
         }
 
-        override fun onError(errorCode: NaviErrorCode) {
+        override fun onError(errorCode: NaviErrorCode) = active(helper) {
             Log.w(TAG, "내비 오류: $errorCode")
             onStatus("내비 오류: $errorCode")
         }
+    }
+
+    @Synchronized
+    private fun active(helper: NaviHelper, action: () -> Unit) {
+        if (navi === helper && connected) action()
     }
 
     /**
@@ -86,7 +111,7 @@ class PleosNavi(
                 { e: Throwable? -> onFailed(helper, e) },
             )
         } catch (t: Throwable) {
-            navi = null
+            stop()
             Log.w(TAG, "NaviHelper 시작 실패", t)
             onStatus("내비 연동 실패: ${t.message}")
         }
@@ -94,28 +119,36 @@ class PleosNavi(
 
     @Synchronized
     fun stop() {
-        val helper = navi ?: return
-        runCatching {
-            if (connected) helper.removeListener(listener)
-            helper.release()
-        }
+        val helper = navi
+        val oldListener = listener
         navi = null
         connected = false
+        listener = null
+        destinationPoint = null
+        if (helper != null) {
+            runCatching { oldListener?.let { helper.removeListener(it) } }
+            runCatching { helper.release() }
+        }
     }
 
     @Synchronized
     private fun onConnected(helper: NaviHelper) {
         if (navi !== helper) return
-        helper.addListener(listener)
-        connected = true
-        onStatus("내비 연동됨")
+        runCatching {
+            connected = true
+            val sessionListener = listenerFor(helper)
+            listener = sessionListener
+            helper.addListener(sessionListener)
+            onStatus("내비 연동됨")
+            helper.getCurrentLocationInfo()
+            helper.getDestinationInfo()
+        }.onFailure { onFailed(helper, it) }
     }
 
     @Synchronized
     private fun onFailed(helper: NaviHelper, e: Throwable?) {
         if (navi !== helper) return
-        runCatching { helper.release() }
-        navi = null
+        stop()
         Log.w(TAG, "NaviHelper 연결 실패", e)
         onStatus("내비 연동 실패: ${e?.message}")
     }
