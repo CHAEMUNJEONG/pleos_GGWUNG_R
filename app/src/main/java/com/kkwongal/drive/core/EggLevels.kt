@@ -1,7 +1,9 @@
 package com.kkwongal.drive.core
 
+import com.kkwongal.drive.rust.RustBridge
+
 /**
- * 꿩알 성장 단계. 새로운 장소의 스탬프 하나가 알 하나이고, 알이 모이면 꿩이 자란다.
+ * 꿩알 성장 단계. 계산은 Rust 코어(kkwongal-core::egg_levels)에서 수행한다.
  */
 object EggLevels {
     data class Level(val name: String, val minEggs: Int)
@@ -13,18 +15,15 @@ object EggLevels {
         Level("황금 꿩", 30),
     )
 
-    fun current(eggs: Int): Level = LEVELS.last { eggs >= it.minEggs }
+    fun current(eggs: Int): Level =
+        RustBridge.parseEggLevelInfo(RustBridge.nativeEggLevelInfo(eggs)).current
 
-    /** 다음 단계. 마지막 단계면 null. */
-    fun next(eggs: Int): Level? = LEVELS.firstOrNull { it.minEggs > eggs }
+    fun next(eggs: Int): Level? =
+        RustBridge.parseEggLevelInfo(RustBridge.nativeEggLevelInfo(eggs)).next
 
-    /** 다음 단계까지 남은 알 개수. 마지막 단계면 0. */
-    fun remaining(eggs: Int): Int = next(eggs)?.let { it.minEggs - eggs } ?: 0
+    fun remaining(eggs: Int): Int =
+        RustBridge.parseEggLevelInfo(RustBridge.nativeEggLevelInfo(eggs)).remaining
 
-    /** 현재 단계에서 다음 단계까지 얼마나 왔는지 (0~1). 마지막 단계면 1. */
-    fun progress(eggs: Int): Float {
-        val now = current(eggs)
-        val nxt = next(eggs) ?: return 1f
-        return (eggs - now.minEggs).toFloat() / (nxt.minEggs - now.minEggs)
-    }
+    fun progress(eggs: Int): Float =
+        RustBridge.parseEggLevelInfo(RustBridge.nativeEggLevelInfo(eggs)).progress
 }

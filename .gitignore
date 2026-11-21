@@ -1,11 +1,13 @@
 .gradle/
-.kotlin/
-**/build/
+build/
+app/build/
 local.properties
 .idea/
 *.iml
+*.apk
+*.aab
+backend/data/
 __pycache__/
 *.pyc
-backend/data/
-*.log
 sdk-probe-results/
+rust/target/
