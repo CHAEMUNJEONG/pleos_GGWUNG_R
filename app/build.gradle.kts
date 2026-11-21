@@ -1,3 +1,5 @@
+import java.io.File
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -25,8 +27,11 @@ android {
 
     buildTypes {
         debug {
-            buildConfigField("boolean", "ALLOW_LOCAL_LEAGUE_HTTP",
-                providers.gradleProperty("LEAGUE_LOCAL_HTTP").orElse("false").get().toBooleanStrict().toString())
+            buildConfigField(
+                "boolean",
+                "ALLOW_LOCAL_LEAGUE_HTTP",
+                providers.gradleProperty("LEAGUE_LOCAL_HTTP").orElse("false").get().toBooleanStrict().toString(),
+            )
         }
         release {
             isMinifyEnabled = false
@@ -42,6 +47,41 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+    sourceSets {
+        getByName("main") {
+            // Only package Android ABI folders (arm64-v8a, x86_64) into APK; host-windows-x86_64 is for JVM unit tests.
+        }
+    }
+    packaging {
+        jniLibs {
+            excludes += "**/host-windows-x86_64/**"
+            excludes += "**/*.dll"
+        }
+    }
+    testOptions {
+        unitTests.all {
+            val candidateDirs = listOf(
+                File(rootProject.projectDir, "rust/target/release"),
+                File(rootProject.projectDir, "../rust/target/release"),
+                File(projectDir, "src/main/jniLibs/host-windows-x86_64"),
+            ).filter { it.isDirectory }.map { it.canonicalFile }
+            val existingPath = System.getProperty("java.library.path") ?: ""
+            val joined = (candidateDirs.map { it.absolutePath } + existingPath)
+                .filter { it.isNotBlank() }
+                .joinToString(File.pathSeparator)
+            it.systemProperty("java.library.path", joined)
+
+            val rustServerExe = listOf(
+                File(rootProject.projectDir, "rust/target/release/kkwongal-server.exe"),
+                File(rootProject.projectDir, "rust/bin/kkwongal-server.exe"),
+                File(rootProject.projectDir, "../rust/target/release/kkwongal-server.exe"),
+                File(rootProject.projectDir, "../rust/bin/kkwongal-server.exe"),
+            ).firstOrNull { it.isFile }?.canonicalFile
+            if (rustServerExe != null) {
+                it.environment("PLEOS_BACKEND_RUST", rustServerExe.absolutePath)
+            }
+        }
     }
 }
 
