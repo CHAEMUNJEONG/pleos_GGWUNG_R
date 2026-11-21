@@ -32,7 +32,7 @@ class StampBook(
         items.firstOrNull { distanceMeters(it.point, point) <= newPlaceRadiusM }
 
     /** 처음 온 곳이면 스탬프를 찍고 돌려준다. 이미 온 곳이면 null. */
-    fun tryAdd(point: GeoPoint, timeMs: Long, score: Int, name: String? = null, perfect: Boolean = false): Stamp? {
+    fun tryAdd(point: GeoPoint, timeMs: Long, score: Int, name: String? = null): Stamp? {
         if (findNearby(point) != null) return null
         val id = (items.maxOfOrNull { it.id } ?: 0) + 1
         val stamp = Stamp(
@@ -42,7 +42,6 @@ class StampBook(
             longitude = point.longitude,
             timeMs = timeMs,
             score = score,
-            perfect = perfect,
         )
         items += stamp
         return stamp
@@ -59,9 +58,6 @@ class StampBook(
      * 스탬프의 이름·메모·태그를 한 번에 고친다. 바뀐 스탬프를 돌려주고, 없는 id 면 null.
      * 이름이 비어 있으면 기존 이름을 유지하고, 목록에 없는 태그는 버린다.
      */
-    /** 스탬프를 지운다. 없으면 false. */
-    fun remove(id: Int): Boolean = items.removeAll { it.id == id }
-
     fun update(id: Int, name: String, memo: String, tags: List<String>): Stamp? {
         val index = items.indexOfFirst { it.id == id }
         if (index < 0) return null
@@ -82,9 +78,7 @@ object BadgeRules {
         if (stamps.isNotEmpty()) earned += Badge.FIRST_STAMP
         if (stamps.size >= 5) earned += Badge.EXPLORER_5
         if (trips.count { it.score >= 90 } >= 3) earned += Badge.SMOOTH_3
-        if (trips.any { it.harshAccelCount == 0 && it.harshBrakeCount == 0 && it.harshSteerCount == 0 }) {
-            earned += Badge.PERFECT
-        }
+        if (trips.any { it.harshAccelCount == 0 && it.harshBrakeCount == 0 }) earned += Badge.PERFECT
         return earned
     }
 }
