@@ -9,6 +9,8 @@ composeBom = "2024.04.01"
 coroutines = "1.8.1"
 junit = "4.13.2"
 pleosNaviHelper = "3.0.5"
+pleosVehicle = "2.3.2"
+pleosTextToSpeech = "3.3.1"
 osmdroid = "6.1.18"
 
 [libraries]
@@ -24,7 +26,9 @@ androidx-material3 = { group = "androidx.compose.material3", name = "material3" 
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 osmdroid = { group = "org.osmdroid", name = "osmdroid-android", version.ref = "osmdroid" }
+pleos-vehicle = { group = "ai.pleos.playground", name = "Vehicle", version.ref = "pleosVehicle" }
 pleos-navihelper = { group = "ai.pleos.playground", name = "NaviHelper", version.ref = "pleosNaviHelper" }
+pleos-tts = { group = "ai.pleos.playground", name = "TextToSpeech", version.ref = "pleosTextToSpeech" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
