@@ -35,7 +35,7 @@ class PleosSdkProbe : Instrumentation() {
             runOnMainSync {
                 adapter = PleosNavi(targetContext,
                     onLocation = { _, _ -> locations.incrementAndGet() },
-                    onArrived = { arrivals.incrementAndGet() },
+                    onArrived = { _, _ -> arrivals.incrementAndGet() },
                     onSpeedLimit = { limits.incrementAndGet() },
                     onStatus = { value ->
                         statuses += value

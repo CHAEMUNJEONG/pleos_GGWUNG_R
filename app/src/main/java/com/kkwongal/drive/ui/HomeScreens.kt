@@ -225,7 +225,7 @@ fun HomeScreen(
 
 /** 이번 주 순위표. 다른 운전자는 시연용 가상 데이터다. */
 @Composable
-fun LeagueScreen(league: LeagueStanding?, earnedPoints: Int, simulation: Boolean = false) {
+fun LeagueScreen(league: LeagueStanding?, earnedPoints: Int, simulation: Boolean = false, server: Boolean = false) {
     val c = LocalKk.current
     if (league == null) return
     val rank = league.myRank
@@ -269,7 +269,8 @@ fun LeagueScreen(league: LeagueStanding?, earnedPoints: Int, simulation: Boolean
                     "순위는 주행 거리만큼 비중을 둔 평균 점수로 정해요 · 상위 10% 500P, 30% 200P, 참가 50P",
                     color = c.muted, fontSize = 13.sp,
                 )
-                Text("시연용: 다른 운전자는 가상 데이터, 포인트는 앱 안의 가상 포인트예요", color = c.muted, fontSize = 13.sp)
+                Text(if (server) "개발 서버의 사용자 순위 · 가상 포인트이며 실제 현대포인트 지급은 없어요"
+                    else "시연용: 다른 운전자는 가상 데이터, 포인트는 앱 안의 가상 포인트예요", color = c.muted, fontSize = 13.sp)
             }
         }
         items(league.entries.size) { index ->

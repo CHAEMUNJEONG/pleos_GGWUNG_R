@@ -22,7 +22,7 @@ data class BrakeSample(val timeMs: Long, val pressed: Boolean)
 data class SpeedLimitSample(val timeMs: Long, val limitKmh: Int)
 
 /** 내비가 알려 준 목적지 도착. wallTimeMs 는 실제 시각(System.currentTimeMillis). */
-data class ArrivedPlace(val name: String, val wallTimeMs: Long)
+data class ArrivedPlace(val name: String, val wallTimeMs: Long, val point: GeoPoint? = null)
 
 /**
  * 차량 데이터가 들어오는 곳. 실제 차량(RealVehicleSource)과
@@ -52,6 +52,9 @@ interface VehicleSource {
 
     /** 마지막으로 알려진 현재 위치의 주소. 없으면 null. */
     val address: StateFlow<String?>
+
+    /** 주소 콜백을 받은 실제 시각. 오래된 주소가 다른 장소의 이름으로 쓰이지 않게 한다. */
+    val addressUpdatedAtMs: StateFlow<Long?>
 
     /** 가장 최근 목적지 도착. 스탬프 이름을 자동으로 채우는 데 쓴다. */
     val arrivedPlace: StateFlow<ArrivedPlace?>

@@ -14,12 +14,20 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
+        val leagueUrl = providers.gradleProperty("LEAGUE_API_BASE_URL").orElse("").get()
+        require(leagueUrl.none { it == '\"' || it == '\\' || it.isISOControl() }) { "Invalid API URL" }
+        buildConfigField("String", "LEAGUE_API_BASE_URL", "\"$leagueUrl\"")
+        buildConfigField("boolean", "ALLOW_LOCAL_LEAGUE_HTTP", "false")
     }
 
     // 안드로이드 차량용 표준 API (속도, 기어, 주행 중 화면 제한)
     useLibrary("android.car")
 
     buildTypes {
+        debug {
+            buildConfigField("boolean", "ALLOW_LOCAL_LEAGUE_HTTP",
+                providers.gradleProperty("LEAGUE_LOCAL_HTTP").orElse("false").get().toBooleanStrict().toString())
+        }
         release {
             isMinifyEnabled = false
         }
@@ -33,10 +41,14 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 
 dependencies {
+    implementation(libs.retrofit)
+    implementation(libs.retrofit.gson)
+    implementation(libs.okhttp)
     implementation(libs.pleos.navihelper)
     // 핸들 각도 (급조향 감지)
     implementation(libs.pleos.vehicle)
@@ -57,4 +69,5 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
 
     testImplementation(libs.junit)
+    testImplementation(libs.mockwebserver)
 }

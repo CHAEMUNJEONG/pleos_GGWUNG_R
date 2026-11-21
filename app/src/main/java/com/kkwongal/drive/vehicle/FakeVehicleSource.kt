@@ -38,6 +38,7 @@ class FakeVehicleSource(
     private var brakeRelease: Job? = null
     private val _location = MutableStateFlow<GeoPoint?>(null)
     private val _address = MutableStateFlow<String?>(null)
+    private val _addressUpdatedAtMs = MutableStateFlow<Long?>(null)
     private val _arrivedPlace = MutableStateFlow<ArrivedPlace?>(null)
     private val _speedLimitSamples = MutableSharedFlow<SpeedLimitSample>(extraBufferCapacity = 64)
     /** 시뮬레이션 도로의 제한속도. 속도에 맞춰 시내(50)·국도(80)·고속도로(100)로 바뀐다. */
@@ -63,6 +64,7 @@ class FakeVehicleSource(
     override val brakeSamples: SharedFlow<BrakeSample> = _brakeSamples.asSharedFlow()
     override val location: StateFlow<GeoPoint?> = _location.asStateFlow()
     override val address: StateFlow<String?> = _address.asStateFlow()
+    override val addressUpdatedAtMs: StateFlow<Long?> = _addressUpdatedAtMs.asStateFlow()
     override val arrivedPlace: StateFlow<ArrivedPlace?> = _arrivedPlace.asStateFlow()
     override val speedLimitSamples: SharedFlow<SpeedLimitSample> = _speedLimitSamples.asSharedFlow()
     override val uxRestricted: StateFlow<Boolean> = _uxRestricted.asStateFlow()
@@ -212,9 +214,11 @@ class FakeVehicleSource(
             steeringAngle = 0.0
             // 실제 차량에서는 내비가 주차 전에 도착을 알려 준다. 기어를 바꾸기 전에 먼저 알린다.
             destinationName?.let {
-                _arrivedPlace.value = ArrivedPlace(it, System.currentTimeMillis())
+                _arrivedPlace.value = ArrivedPlace(it, System.currentTimeMillis(), _location.value)
                 board.ok(Channel.ARRIVAL, "$it · 시뮬레이션")
             }
+        } else {
+            _arrivedPlace.value = null
         }
         _driveState.value = if (parked) DriveState.PARKED else DriveState.DRIVING
         board.ok(Channel.GEAR, (if (parked) "P (주차)" else "D (주행)") + " · 시뮬레이션")
@@ -226,6 +230,7 @@ class FakeVehicleSource(
         _location.value = point
         destinationName = name
         _address.value = address
+        _addressUpdatedAtMs.value = System.currentTimeMillis()
         if (point != null) board.ok(Channel.LOCATION, (name ?: address ?: "선택한 위치") + " · 시뮬레이션")
     }
 

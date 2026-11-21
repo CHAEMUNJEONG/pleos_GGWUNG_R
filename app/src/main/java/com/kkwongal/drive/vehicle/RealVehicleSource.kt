@@ -53,6 +53,7 @@ class RealVehicleSource(context: Context) : VehicleSource {
     private val _brakeSamples = MutableSharedFlow<BrakeSample>(extraBufferCapacity = 16)
     private val _location = MutableStateFlow<GeoPoint?>(null)
     private val _address = MutableStateFlow<String?>(null)
+    private val _addressUpdatedAtMs = MutableStateFlow<Long?>(null)
     private val _arrivedPlace = MutableStateFlow<ArrivedPlace?>(null)
     private val _speedLimitSamples = MutableSharedFlow<SpeedLimitSample>(extraBufferCapacity = 16)
     private val _uxRestricted = MutableStateFlow(true) // 확인 전에는 제한된 것으로 본다
@@ -72,6 +73,7 @@ class RealVehicleSource(context: Context) : VehicleSource {
     override val brakeSamples: SharedFlow<BrakeSample> = _brakeSamples.asSharedFlow()
     override val location: StateFlow<GeoPoint?> = _location.asStateFlow()
     override val address: StateFlow<String?> = _address.asStateFlow()
+    override val addressUpdatedAtMs: StateFlow<Long?> = _addressUpdatedAtMs.asStateFlow()
     override val arrivedPlace: StateFlow<ArrivedPlace?> = _arrivedPlace.asStateFlow()
     override val speedLimitSamples: SharedFlow<SpeedLimitSample> = _speedLimitSamples.asSharedFlow()
     override val uxRestricted: StateFlow<Boolean> = _uxRestricted.asStateFlow()
@@ -92,12 +94,15 @@ class RealVehicleSource(context: Context) : VehicleSource {
         context = appContext,
         onLocation = { point, address ->
             _location.value = point
-            if (address.isNotBlank()) _address.value = address
+            _address.value = address.takeIf { it.isNotBlank() }
+            _addressUpdatedAtMs.value = System.currentTimeMillis()
             board.ok(Channel.LOCATION, address.ifBlank { String.format(java.util.Locale.US, "%.4f, %.4f", point.latitude, point.longitude) })
         },
-        onArrived = { name ->
+        onArrived = { name, point ->
             Log.i(TAG, "목적지 도착: $name")
-            if (name.isNotBlank()) _arrivedPlace.value = ArrivedPlace(name, System.currentTimeMillis())
+            _arrivedPlace.value = name.takeIf { it.isNotBlank() }?.let {
+                ArrivedPlace(it, System.currentTimeMillis(), point)
+            }
             board.ok(Channel.ARRIVAL, name.ifBlank { "이름 없는 목적지" })
         },
         onSpeedLimit = { limit ->
