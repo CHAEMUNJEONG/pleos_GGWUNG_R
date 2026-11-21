@@ -160,7 +160,7 @@ Pleos 공식 정책("표준 우선")에 따라, 안드로이드 차량용 표준
 
 ## 디자인 가이드 반영 (Pleos Connect UI Design Guide)
 
-- 글꼴: 가이드 권장 글꼴 Asta Sans(42dot, SIL Open Font License, `licenses/AstaSans-OFL.txt`)
+- 글꼴: 가이드 권장 글꼴 Asta Sans(42dot, SIL Open Font License, `AstaSans-OFL.txt`)
 - 글자 크기: 17인치 차량 화면에서 재어 보조 글자 3mm 이상, 중요 숫자 5mm 이상이 되도록 차량 화면에서 글자를 25% 키움. 최소 12sp
 - 대비: 모든 글자·배경 조합 4.5:1 이상 (밝은 화면의 빨강·초록을 더 진하게 조정)
 - 주행 중 움직임 없음: 감점 기록이 밀려 들어오거나 깜빡이지 않고, 게이지도 바로 바뀜
@@ -171,3 +171,14 @@ Pleos 공식 정책("표준 우선")에 따라, 안드로이드 차량용 표준
 
 - 실제 지도: OpenStreetMap (© OpenStreetMap contributors), osmdroid 라이브러리로 표시. 인터넷 연결 필요
 - 윤곽 지도: Natural Earth 1:10m Admin 0 Countries (퍼블릭 도메인)
+
+## 개발·검증 안내
+
+- [Android 빌드와 소스 위치](docs/BUILD.md)
+- [실제 SDK 콜백 진단](docs/SDK_RUNTIME_CHECK.md)
+- [스탬프 자동 이름 검증](docs/STAMP_NAMES.md)
+- [선택적 개발 서버 리그 연결과 API 계약](backend/README.md)
+
+서버 주소를 설정하지 않으면 위에서 설명한 시연용 가상 리그를 사용합니다.
+주소를 설정한 빌드는 명시적으로 전송한 사용자 기록으로 서버 순위를 조회합니다.
+실제 주행과 시뮬레이션은 각각 별도 리그이며 포인트는 계속 개발용 가상 포인트입니다.
