@@ -1,9 +1,134 @@
 import java.io.File
+import java.util.Properties
 
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+}
+
+val isWindows = System.getProperty("os.name").lowercase().contains("win")
+val cargoExeName = if (isWindows) "cargo.exe" else "cargo"
+val serverBinName = if (isWindows) "kkwongal-server.exe" else "kkwongal-server"
+val rustDir = File(rootProject.projectDir, "rust")
+val generatedJniDir = layout.buildDirectory.dir("generated/rustJniLibs")
+
+fun resolveCargoExecutable(): String {
+    val candidates = buildList {
+        System.getenv("CARGO")?.takeIf { it.isNotBlank() }?.let { add(File(it)) }
+        System.getenv("CARGO_HOME")?.takeIf { it.isNotBlank() }?.let { add(File(it, "bin/$cargoExeName")) }
+        System.getProperty("user.home")?.takeIf { it.isNotBlank() }?.let { add(File(it, ".cargo/bin/$cargoExeName")) }
+        (System.getenv("PATH") ?: "").split(File.pathSeparator)
+            .filter { it.isNotBlank() }
+            .forEach { add(File(it, cargoExeName)) }
+    }
+    return candidates.firstOrNull { it.isFile }?.absolutePath ?: cargoExeName
+}
+
+fun resolveSdkDirFromLocalProperties(): File? {
+    val propsFile = File(rootProject.projectDir, "local.properties")
+    if (!propsFile.isFile) return null
+    val props = Properties()
+    propsFile.inputStream().use { props.load(it) }
+    return props.getProperty("sdk.dir")?.takeIf { it.isNotBlank() }?.let(::File)?.takeIf { it.isDirectory }
+}
+
+fun resolveAndroidNdkDir(): File {
+    val direct = listOfNotNull(
+        System.getenv("ANDROID_NDK_HOME"),
+        System.getenv("ANDROID_NDK_ROOT"),
+        System.getenv("NDK_HOME"),
+    ).map(::File).firstOrNull { it.isDirectory }
+    if (direct != null) return direct
+
+    val sdkRoots = listOfNotNull(
+        System.getenv("ANDROID_HOME")?.let(::File),
+        System.getenv("ANDROID_SDK_ROOT")?.let(::File),
+        resolveSdkDirFromLocalProperties(),
+    ).filter { it.isDirectory }
+
+    for (sdk in sdkRoots) {
+        val ndkRoot = File(sdk, "ndk")
+        val latest = ndkRoot.listFiles()?.filter { it.isDirectory }?.maxByOrNull { it.name }
+        if (latest != null) return latest
+        val bundle = File(sdk, "ndk-bundle")
+        if (bundle.isDirectory) return bundle
+    }
+    error(
+        "Android NDK not found. Set ANDROID_NDK_HOME or install NDK under ANDROID_HOME/ndk " +
+            "(or sdk.dir in local.properties).",
+    )
+}
+
+fun resolveNdkToolchainBin(ndkDir: File): File {
+    val prebuiltRoot = File(ndkDir, "toolchains/llvm/prebuilt")
+    val hostDir = prebuiltRoot.listFiles()?.firstOrNull { it.isDirectory }
+        ?: error("NDK LLVM prebuilt toolchain not found under $prebuiltRoot")
+    return File(hostDir, "bin")
+}
+
+val cargoBuildHost by tasks.registering(Exec::class) {
+    group = "rust"
+    description = "Builds host Rust JNI library and weekly league server for unit/contract tests."
+    workingDir = rustDir
+    inputs.file(File(rustDir, "Cargo.toml"))
+    inputs.file(File(rustDir, "Cargo.lock"))
+    inputs.dir(File(rustDir, "crates"))
+    outputs.file(File(rustDir, "target/release/$serverBinName"))
+    commandLine(
+        resolveCargoExecutable(),
+        "build",
+        "-p",
+        "kkwongal-jni",
+        "-p",
+        "kkwongal-server",
+        "--release",
+    )
+}
+
+val cargoBuildAndroid by tasks.registering {
+    group = "rust"
+    description = "Cross-compiles Rust JNI library (libkkwongal_jni.so) for x86_64 and arm64-v8a via Android NDK."
+    inputs.file(File(rustDir, "Cargo.toml"))
+    inputs.file(File(rustDir, "Cargo.lock"))
+    inputs.dir(File(rustDir, "crates"))
+    outputs.dir(generatedJniDir)
+
+    doLast {
+        val cargo = resolveCargoExecutable()
+        val ndkDir = resolveAndroidNdkDir()
+        val binDir = resolveNdkToolchainBin(ndkDir)
+        val clangSuffix = if (isWindows) ".cmd" else ""
+        val arSuffix = if (isWindows) ".exe" else ""
+        val x86Linker = File(binDir, "x86_64-linux-android28-clang$clangSuffix").absolutePath
+        val armLinker = File(binDir, "aarch64-linux-android28-clang$clangSuffix").absolutePath
+        val llvmAr = File(binDir, "llvm-ar$arSuffix").absolutePath
+        val pageSizeFlag = "-C link-arg=-Wl,-z,max-page-size=16384"
+
+        val targets = listOf(
+            "x86_64-linux-android" to "x86_64",
+            "aarch64-linux-android" to "arm64-v8a",
+        )
+        for ((rustTarget, androidAbi) in targets) {
+            exec {
+                workingDir = rustDir
+                environment("ANDROID_NDK_HOME", ndkDir.absolutePath)
+                environment("CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER", x86Linker)
+                environment("CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER", armLinker)
+                environment("CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS", pageSizeFlag)
+                environment("CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS", pageSizeFlag)
+                environment("CC_x86_64_linux_android", x86Linker)
+                environment("CC_aarch64_linux_android", armLinker)
+                environment("AR_x86_64_linux_android", llvmAr)
+                environment("AR_aarch64_linux_android", llvmAr)
+                commandLine(cargo, "build", "-p", "kkwongal-jni", "--release", "--target", rustTarget)
+            }
+            val builtSo = File(rustDir, "target/$rustTarget/release/libkkwongal_jni.so")
+            val abiOutDir = File(generatedJniDir.get().asFile, androidAbi)
+            abiOutDir.mkdirs()
+            builtSo.copyTo(File(abiOutDir, "libkkwongal_jni.so"), overwrite = true)
+        }
+    }
 }
 
 android {
@@ -50,39 +175,25 @@ android {
     }
     sourceSets {
         getByName("main") {
-            // Only package Android ABI folders (arm64-v8a, x86_64) into APK; host-windows-x86_64 is for JVM unit tests.
-        }
-    }
-    packaging {
-        jniLibs {
-            excludes += "**/host-windows-x86_64/**"
-            excludes += "**/*.dll"
+            jniLibs.srcDir(generatedJniDir)
         }
     }
     testOptions {
         unitTests.all {
-            val candidateDirs = listOf(
-                File(rootProject.projectDir, "rust/target/release"),
-                File(rootProject.projectDir, "../rust/target/release"),
-                File(projectDir, "src/main/jniLibs/host-windows-x86_64"),
-            ).filter { it.isDirectory }.map { it.canonicalFile }
+            it.dependsOn(cargoBuildHost)
+            val rustReleaseDir = File(rustDir, "target/release").canonicalFile
             val existingPath = System.getProperty("java.library.path") ?: ""
-            val joined = (candidateDirs.map { it.absolutePath } + existingPath)
-                .filter { it.isNotBlank() }
-                .joinToString(File.pathSeparator)
-            it.systemProperty("java.library.path", joined)
-
-            val rustServerExe = listOf(
-                File(rootProject.projectDir, "rust/target/release/kkwongal-server.exe"),
-                File(rootProject.projectDir, "rust/bin/kkwongal-server.exe"),
-                File(rootProject.projectDir, "../rust/target/release/kkwongal-server.exe"),
-                File(rootProject.projectDir, "../rust/bin/kkwongal-server.exe"),
-            ).firstOrNull { it.isFile }?.canonicalFile
-            if (rustServerExe != null) {
-                it.environment("PLEOS_BACKEND_RUST", rustServerExe.absolutePath)
-            }
+            it.systemProperty(
+                "java.library.path",
+                rustReleaseDir.absolutePath + File.pathSeparator + existingPath,
+            )
+            it.environment("PLEOS_BACKEND_RUST", File(rustReleaseDir, serverBinName).absolutePath)
         }
     }
+}
+
+tasks.matching { it.name == "mergeDebugJniLibFolders" || it.name == "mergeReleaseJniLibFolders" }.configureEach {
+    dependsOn(cargoBuildAndroid)
 }
 
 dependencies {

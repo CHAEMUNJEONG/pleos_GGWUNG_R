@@ -1,7 +1,0 @@
-[target.x86_64-linux-android]
-linker = "C:/Users/violet/Desktop/Pleos/work/android-sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/windows-x86_64/bin/x86_64-linux-android28-clang.cmd"
-rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
-
-[target.aarch64-linux-android]
-linker = "C:/Users/violet/Desktop/Pleos/work/android-sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/windows-x86_64/bin/aarch64-linux-android28-clang.cmd"
-rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
