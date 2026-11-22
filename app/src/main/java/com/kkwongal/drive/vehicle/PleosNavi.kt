@@ -29,6 +29,9 @@ class PleosNavi(
     private var destinationPoint: GeoPoint? = null
     private var listener: NaviHelperEventListener? = null
 
+    /** 로그에 마지막으로 남긴 제한속도. 같은 값이 1초마다 오므로 바뀔 때만 남긴다. */
+    @Volatile private var lastLoggedLimit = Int.MIN_VALUE
+
     private fun listenerFor(helper: NaviHelper) = object : NaviHelperEventListener {
         override fun onCurrentLocationInfo(currentLocationInfo: CurrentLocationInfo) = active(helper) {
             onLocation(
@@ -63,7 +66,11 @@ class PleosNavi(
         }
 
         override fun onCurrentRoadSpeedLimit(speedLimit: Int) = active(helper) {
-            // 도로 종류(시내·국도·고속도로)와 적정 속도 판단에 쓴다
+            // 도로 종류(시내·국도·고속도로)와 적정 속도 판단에 쓴다. 1초마다 오므로 값이 바뀔 때만 로그를 남긴다.
+            if (speedLimit != lastLoggedLimit) {
+                lastLoggedLimit = speedLimit
+                Log.i(TAG, "도로 제한속도: $speedLimit km/h")
+            }
             onSpeedLimit(speedLimit)
         }
 
