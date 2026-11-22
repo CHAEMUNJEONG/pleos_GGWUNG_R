@@ -73,9 +73,9 @@ class LocalBackendContractTest {
             .mapNotNull { dir ->
                 listOf(
                     File(dir, "rust/target/release/kkwongal-server.exe"),
-                    File(dir, "rust/bin/kkwongal-server.exe"),
+                    File(dir, "rust/target/release/kkwongal-server"),
                     File(dir, "../rust/target/release/kkwongal-server.exe"),
-                    File(dir, "../rust/bin/kkwongal-server.exe"),
+                    File(dir, "../rust/target/release/kkwongal-server"),
                 ).firstOrNull { it.isFile }
             }
             .firstOrNull()
